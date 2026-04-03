@@ -64,7 +64,7 @@ void MatrixRTCSession::requestLiveKitJWT(const mtx::responses::MatrixOpenidToken
     payload["openid_token"] = openidObj;
 
     QJsonObject memberObj;
-    memberObj["id"] = "";
+    memberObj["id"] = "xyz";
     memberObj["claimed_device_id"] = QString::fromStdString(deviceId_);
     memberObj["claimed_user_id"] = QString::fromStdString(userId_);
     payload["member"] = memberObj;

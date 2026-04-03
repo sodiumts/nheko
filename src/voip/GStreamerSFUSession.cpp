@@ -316,28 +316,19 @@ void GStreamerSFUSession::onPadAdded(GstElement *, GstPad *pad, gpointer user_da
         return;
 
     GstCaps *caps = gst_pad_get_current_caps(pad);
-    if (!caps)
-        caps = gst_pad_query_caps(pad, nullptr);
+    if (!caps) caps = gst_pad_query_caps(pad, nullptr);
     if (!caps || gst_caps_is_empty(caps) || gst_caps_is_any(caps)) {
-        if (caps)
-            gst_caps_unref(caps);
+        if (caps) gst_caps_unref(caps);
         return;
     }
-
-    gchar *caps_str = gst_caps_to_string(caps);
-    nhlog::ui()->info("Incoming audio caps: {}", caps_str);
-    g_free(caps_str);
 
     const GstStructure *s = gst_caps_get_structure(caps, 0);
     const char *media = gst_structure_get_string(s, "media");
-    if (!media || g_strcmp0(media, "audio") != 0) {
-        gst_caps_unref(caps);
-        return;
-    }
     gst_caps_unref(caps);
 
-    GstElement *queue    = gst_element_factory_make("queue", nullptr);
-    GstElement *jitter   = gst_element_factory_make("rtpjitterbuffer", nullptr);
+    if (!media || g_strcmp0(media, "audio") != 0)
+        return;
+
     GstElement *depay    = gst_element_factory_make("rtpopusdepay", nullptr);
     GstElement *dec      = gst_element_factory_make("opusdec", nullptr);
     GstElement *conv     = gst_element_factory_make("audioconvert", nullptr);
@@ -346,40 +337,32 @@ void GStreamerSFUSession::onPadAdded(GstElement *, GstPad *pad, gpointer user_da
     if (!sink)
         sink = gst_element_factory_make("autoaudiosink", nullptr);
 
-    if (!queue || !jitter || !depay || !dec || !conv || !resample || !sink) {
-        nhlog::ui()->error("SFU: failed to create audio chain elements");
+    if (!depay || !dec || !conv || !resample || !sink) {
+        nhlog::ui()->error("SFU: failed to create audio elements");
         return;
     }
 
-    g_object_set(queue, "leaky", 2, "max-size-buffers", 200, nullptr);
-    g_object_set(jitter, "latency", 200, "drop-on-latency", TRUE, "do-retransmission", TRUE, nullptr);
     g_object_set(dec, "use-inband-fec", TRUE, nullptr);
 
-    gst_bin_add_many(GST_BIN(self->pipe_), queue, jitter, depay, dec, conv, resample, sink, nullptr);
+    gst_bin_add_many(GST_BIN(self->pipe_), depay, dec, conv, resample, sink, nullptr);
 
-    if (!gst_element_link_many(queue, jitter, depay, dec, conv, resample, sink, nullptr)) {
-        nhlog::ui()->error("SFU: failed to link audio chain internally");
+    if (!gst_element_link_many(depay, dec, conv, resample, sink, nullptr)) {
+        nhlog::ui()->error("SFU: failed to link audio chain");
         return;
     }
 
-    GstPad *queueSink = gst_element_get_static_pad(queue, "sink");
-    if (!queueSink || gst_pad_link(pad, queueSink) != GST_PAD_LINK_OK) {
-        nhlog::ui()->error("SFU: failed to link webrtc pad to queue");
-        if (queueSink)
-            gst_object_unref(queueSink);
-        return;
-    }
-    gst_object_unref(queueSink);
+    GstPad *depaySink = gst_element_get_static_pad(depay, "sink");
+    if (!depaySink || gst_pad_link(pad, depaySink) != GST_PAD_LINK_OK)
+        nhlog::ui()->error("SFU: failed to link webrtc pad to depayloader");
+    if (depaySink) gst_object_unref(depaySink);
 
-    gst_element_sync_state_with_parent(queue);
-    gst_element_sync_state_with_parent(jitter);
     gst_element_sync_state_with_parent(depay);
     gst_element_sync_state_with_parent(dec);
     gst_element_sync_state_with_parent(conv);
     gst_element_sync_state_with_parent(resample);
     gst_element_sync_state_with_parent(sink);
 
-    nhlog::ui()->info("SFU: audio pipeline fully linked and started");
+    nhlog::ui()->info("SFU: audio pipeline connected");
 }
 
 void
