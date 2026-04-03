@@ -5,6 +5,9 @@
 #include "TimelineModel.h"
 
 #include <algorithm>
+#include <mtx/events.hpp>
+#include <mtx/events/event_type.hpp>
+#include <mtx/events/matrixrtc.hpp>
 #include <thread>
 #include <type_traits>
 #include <utility>
@@ -29,6 +32,7 @@
 #include "Logging.h"
 #include "MainWindow.h"
 #include "MatrixClient.h"
+#include "MatrixRTCSession.h"
 #include "ReadReceiptsModel.h"
 #include "RoomlistModel.h"
 #include "TimelineViewManager.h"
@@ -247,6 +251,8 @@ qml_mtx_events::toRoomEventType(mtx::events::EventType e)
         return qml_mtx_events::ImagePackInAccountData;
     case EventType::ImagePackRooms:
         return qml_mtx_events::ImagePackRooms;
+    case EventType::CallMember:
+        return qml_mtx_events::CallMember;
     case EventType::Unsupported:
         return qml_mtx_events::EventType::Unsupported;
     default:
@@ -404,6 +410,8 @@ qml_mtx_events::fromRoomEventType(qml_mtx_events::EventType t)
     //! m.image_pack.rooms, currently im.ponies.emote_rooms
     case qml_mtx_events::ImagePackRooms:
         return mtx::events::EventType::ImagePackRooms;
+    case qml_mtx_events::CallMember:
+        return mtx::events::EventType::CallMember;
     default:
         return mtx::events::EventType::Unsupported;
     };
@@ -525,6 +533,15 @@ TimelineModel::TimelineModel(TimelineViewManager *manager, QString room_id, QObj
         cache::client()->updateState(room_id_.toStdString(), events_, true);
         this->syncState({std::move(events_.events)});
     });
+
+    auto callMemberEvents = cache::client()->getStateEventsWithType<mtx::events::state::CallMember>(
+        room_id_.toStdString(), mtx::events::EventType::CallMember);
+
+    for (const auto &event : callMemberEvents) {
+        if (event.sender.empty() || event.content.empty || event.content.memberships.empty())
+            continue;
+        updateCallParticipants(event);
+    }
 }
 
 QHash<int, QByteArray>
@@ -773,6 +790,27 @@ TimelineModel::data(const mtx::events::collections::TimelineEvents &event, int r
                       return formatGuestAccessEvent(e);
                   else if constexpr (t == mtx::events::EventType::RoomMember)
                       return formatMemberEvent(e);
+                  else if constexpr (t == mtx::events::EventType::CallMember) {
+                      if (e.content.empty || e.content.memberships.empty()) {
+                          return tr("%1 left the call")
+                              .arg(displayName(QString::fromStdString(e.sender)));
+                      }
+
+                      bool isUpdate = false;
+                          if (!e.unsigned_data.replaces_state.empty()) {
+                              const auto &m = e.content.memberships.front();
+                              if (m.created_ts > 0) {
+                                  isUpdate = true;
+                              }
+                          }
+
+                          if (isUpdate)
+                              return tr("%1 updated their call status.")
+                                  .arg(displayName(QString::fromStdString(e.sender)));
+
+                          return tr("%1 joined the call.")
+                              .arg(displayName(QString::fromStdString(e.sender)));
+                  }
 
                   return tr("%1 changed unknown state event %2.")
                     .arg(displayName(QString::fromStdString(e.sender)))
@@ -1143,6 +1181,13 @@ TimelineModel::syncState(const mtx::responses::State &s)
         } else if (std::holds_alternative<StateEvent<state::space::Parent>>(e)) {
             this->parentChecked = false;
             emit parentSpaceChanged();
+        } else if (std::holds_alternative<StateEvent<state::CallMember>>(e)) {
+            nhlog::ui()->info("Received call member state update\n");
+            auto ev = std::get<StateEvent<state::CallMember>>(e);
+            nhlog::ui()->info("Initial call member: user={} empty={}", ev.sender, ev.content.memberships.empty());
+            updateCallParticipants(std::get<StateEvent<state::CallMember>>(e));
+        } else {
+            nhlog::ui()->info("Received sync unknown");
         }
     }
 
@@ -1227,6 +1272,22 @@ TimelineModel::addEvents(const mtx::responses::Timeline &timeline)
             avatarChanged      = true;
             nameChanged        = true;
             memberCountChanged = true;
+        } else if (std::holds_alternative<StateEvent<state::CallMember>>(e)) {
+            const auto &event = std::get<StateEvent<state::CallMember>>(e);
+            const auto &content = event.content;
+
+            if (content.empty || content.memberships.empty()) {
+                nhlog::ui()->info("User/device {} left the call", event.state_key);
+            } else {
+                const auto &m = content.memberships.front();
+                nhlog::ui()->info("User/device {} joined - device: {}, intent: {}, expires in {}ms",
+                    event.state_key, m.device_id, m.intent, m.expires);
+                for (const auto &focus : m.foci_preferred)
+                nhlog::ui()->info("  Focus: {} {} ({})",
+                    focus.type, focus.livekit_service_url, focus.livekit_alias);
+            }
+
+            updateCallParticipants(event);
         } else if (std::holds_alternative<StateEvent<state::Encryption>>(e)) {
             this->isEncrypted_ = cache::isRoomEncrypted(room_id_.toStdString());
             emit encryptionChanged();
@@ -1361,6 +1422,53 @@ TimelineModel::updateLastMessage()
         return;
     }
 }
+void TimelineModel::updateCallParticipants(const mtx::events::StateEvent<mtx::events::state::CallMember>& event)
+{
+    const auto& content = event.content;
+    const QString userId = QString::fromStdString(event.sender);
+    bool changed = false;
+
+    nhlog::ui()->info("updateCallParticipants: user={} memberships empty={}",
+                      userId.toStdString(),
+                      content.memberships.empty() ? 1 : 0);
+
+    if (content.memberships.empty()) {
+        if (activeCallParticipants_.remove(userId)) {
+            changed = true;
+            nhlog::ui()->info("Removed user {} from active participants", userId.toStdString());
+        }
+    } else {
+        int64_t now = QDateTime::currentMSecsSinceEpoch();
+        bool isActive = false;
+        for (const auto& membership : content.memberships) {
+            int64_t expiryTime = event.origin_server_ts + membership.expires;
+            if (expiryTime > now) {
+                isActive = true;
+                break;
+            }
+        }
+        if (isActive) {
+            if (!activeCallParticipants_.contains(userId)) {
+                activeCallParticipants_.insert(userId);
+                changed = true;
+                nhlog::ui()->info("Added user {} to active participants", userId.toStdString());
+            } else {
+                nhlog::ui()->info("User {} already in active participants", userId.toStdString());
+            }
+        } else {
+            if (activeCallParticipants_.remove(userId)) {
+                changed = true;
+                nhlog::ui()->info("Removed expired user {}", userId.toStdString());
+            }
+        }
+    }
+
+    if (changed) {
+        callParticipantsCount_ = activeCallParticipants_.size();
+        nhlog::ui()->info("callParticipantsCount changed to {}", callParticipantsCount_);
+        emit callParticipantsCountChanged();
+    }
+}
 
 void
 TimelineModel::setCurrentIndex(int index)
@@ -1417,6 +1525,11 @@ QString
 TimelineModel::displayName(const QString &id) const
 {
     return cache::displayName(room_id_, id).toHtmlEscaped();
+}
+QString
+TimelineModel::memberDisplayName(const QString &id) const
+{
+    return cache::displayName(room_id_, id);
 }
 
 QString
@@ -2261,6 +2374,24 @@ TimelineModel::copyLinkToEvent(const QString &eventId) const
                        QString(QUrl::toPercentEncoding(eventId)),
                        getRoomVias(room_id_));
     QGuiApplication::clipboard()->setText(link);
+}
+
+void
+TimelineModel::joinCall()
+{
+    RTCSession_ = new MatrixRTCSession(room_id_.toStdString(), http::client()->user_id().to_string(), http::client()->device_id(), this);
+    RTCSession_->join();
+    isInCall_ = true;
+    emit isInCallChanged();
+}
+
+void
+TimelineModel::leaveCall()
+{
+    RTCSession_->leave();
+    delete RTCSession_;
+    isInCall_ = false;
+    emit isInCallChanged();
 }
 
 void
@@ -3211,6 +3342,17 @@ TimelineModel::resetState()
 
           emit newState(events_);
       });
+    activeCallParticipants_.clear();
+    callParticipantsCount_ = 0;
+
+    auto callMemberEvents = cache::client()->getStateEventsWithType<mtx::events::state::CallMember>(
+        room_id_.toStdString(), mtx::events::EventType::CallMember);
+    for (const auto &event : callMemberEvents) {
+        if (event.sender.empty() || event.content.empty || event.content.memberships.empty())
+            continue;
+        updateCallParticipants(event);
+    }
+    emit callParticipantsCountChanged();
 }
 
 QString

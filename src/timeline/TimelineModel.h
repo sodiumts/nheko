@@ -18,6 +18,7 @@
 #include "CacheStructs.h"
 #include "EventStore.h"
 #include "InputBar.h"
+#include "MatrixRTCSession.h"
 #include "Permissions.h"
 #include "Reaction.h"
 #include "ui/RoomSummary.h"
@@ -137,6 +138,7 @@ enum EventType
     SpaceParent,
     // m.space.child
     SpaceChild,
+    CallMember
 };
 Q_ENUM_NS(EventType)
 mtx::events::EventType fromRoomEventType(qml_mtx_events::EventType);
@@ -224,6 +226,9 @@ class TimelineModel final : public QAbstractListModel
     Q_PROPERTY(InputBar *input READ input CONSTANT)
     Q_PROPERTY(Permissions *permissions READ permissions NOTIFY permissionsChanged)
     Q_PROPERTY(RoomSummary *parentSpace READ parentSpace NOTIFY parentSpaceChanged)
+    Q_PROPERTY(int callParticipantsCount READ callParticipantsCount NOTIFY callParticipantsCountChanged)
+    Q_PROPERTY(QStringList callParticipants READ callParticipants NOTIFY callParticipantsCountChanged)
+    Q_PROPERTY(bool isInCall READ isInCall NOTIFY isInCallChanged)
 
 public:
     explicit TimelineModel(TimelineViewManager *manager,
@@ -273,6 +278,7 @@ public:
         CallType,
         Dump,
         RelatedEventCacheBuster,
+        IsJoin
     };
     Q_ENUM(Roles);
 
@@ -303,6 +309,7 @@ public:
     static QString getRoomVias(const QString &);
 
     Q_INVOKABLE QString displayName(const QString &id) const;
+    Q_INVOKABLE QString memberDisplayName(const QString &id) const;
     Q_INVOKABLE QString avatarUrl(const QString &id) const;
     Q_INVOKABLE QString formatDateSeparator(QDate date) const;
     Q_INVOKABLE QString formatLaterSeparator(QDateTime prevDate, QDateTime date) const;
@@ -346,6 +353,8 @@ public:
     Q_INVOKABLE bool copyMedia(const QString &eventId) const;
     Q_INVOKABLE void showEvent(QString eventId);
     Q_INVOKABLE void copyLinkToEvent(const QString &eventId) const;
+    Q_INVOKABLE void joinCall();
+    Q_INVOKABLE void leaveCall();
 
     void
     cacheMedia(const QString &eventId, const std::function<void(const QString filename)> &callback);
@@ -385,6 +394,12 @@ public:
     int roomMemberCount() const;
     bool isDirect() const { return roomMemberCount() <= 2; }
     QString directChatOtherUserId() const;
+    int callParticipantsCount() const { return callParticipantsCount_; }
+    QStringList callParticipants() const {
+        return QStringList(activeCallParticipants_.begin(), activeCallParticipants_.end());
+    }
+
+    bool isInCall() const { return isInCall_; }
 
     mtx::pushrules::PushRuleEvaluator::RoomContext pushrulesRoomContext() const;
 
@@ -398,6 +413,7 @@ public:
     }
 
     void refetchOnlineKeyBackupKeys() { events.refetchOnlineKeyBackupKeys(); };
+
 
 public slots:
     void setCurrentIndex(int index);
@@ -512,6 +528,8 @@ signals:
     void directChatOtherUserIdChanged();
     void permissionsChanged();
     void forwardToRoom(mtx::events::collections::TimelineEvents const *e, QString roomId);
+    void callParticipantsCountChanged();
+    void isInCallChanged();
 
     void scrollTargetChanged();
 
@@ -522,6 +540,13 @@ private:
     void
     sendEncryptedMessage(const mtx::events::RoomEvent<T> &msg, mtx::events::EventType eventType);
     void readEvent(const std::string &id);
+
+    void updateCallParticipants(const mtx::events::StateEvent<mtx::events::state::CallMember>& event);
+
+    QSet<QString> activeCallParticipants_;
+    int callParticipantsCount_ = 0;
+    bool isInCall_ = false;
+    MatrixRTCSession* RTCSession_ = nullptr;
 
     void setPaginationInProgress(const bool paginationInProgress);
 

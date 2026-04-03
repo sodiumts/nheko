@@ -130,11 +130,62 @@ Pane {
                 selectByMouse: false
                 text: roomTopic
             }
+
+            RowLayout {
+                Layout.column: 3
+                Layout.row: 1
+                Layout.rowSpan: 2
+                spacing: -Nheko.paddingSmall
+                visible: room && room.callParticipantsCount > 0
+
+                Repeater {
+                    model: room ? room.callParticipants : []
+
+                    delegate: Item {
+                        width: Nheko.avatarSize * 0.7
+                        height: Nheko.avatarSize * 0.7
+
+                        property string resolvedName: room ? room.memberDisplayName(modelData) : modelData
+                        property string resolvedUrl: room ? room.avatarUrl(modelData).replace("mxc://", "image://MxcImage/") : ""
+
+
+                        Avatar {
+                            id: participantAvatar
+                            width: parent.width
+                            height: parent.height
+                            userid: modelData
+                            displayName: parent.resolvedName
+                            url: parent.resolvedUrl
+                            crop: true
+                        }
+
+                        Rectangle {
+                            anchors.fill: parent
+                            radius: width / 2
+                            color: "transparent"
+                            border.color: palette.highlight
+                            border.width: 2
+                            z: 1
+                        }
+
+                        HoverHandler {
+                            id: hover
+                        }
+
+                        ToolTip {
+                            visible: hover.hovered
+                            text: parent.resolvedName
+                            delay: 500
+                        }
+                    }
+                }
+            }
+
             ImageButton {
                 id: notificationsButton
 
                 Layout.alignment: Qt.AlignRight
-                Layout.column: 3
+                Layout.column: 4
                 Layout.preferredHeight: Nheko.avatarSize - Nheko.paddingMedium
                 Layout.preferredWidth: Nheko.avatarSize - Nheko.paddingMedium
                 Layout.row: 1
@@ -153,7 +204,7 @@ Pane {
                 property bool pinsShown: !Settings.hiddenPins.includes(roomId)
 
                 Layout.alignment: Qt.AlignVCenter
-                Layout.column: 4
+                Layout.column: 5
                 Layout.preferredHeight: Nheko.avatarSize - Nheko.paddingMedium
                 Layout.preferredWidth: Nheko.avatarSize - Nheko.paddingMedium
                 Layout.row: 1
@@ -178,7 +229,7 @@ Pane {
             }
             AbstractButton {
                 id: memberButton
-                Layout.column: 5
+                Layout.column: 6
                 Layout.preferredHeight: Nheko.avatarSize - Nheko.paddingMedium
                 Layout.preferredWidth: Nheko.avatarSize - Nheko.paddingMedium
                 Layout.row: 1
@@ -212,13 +263,14 @@ Pane {
 
                 onClicked: TimelineManager.openRoomMembers(room)
             }
+
             ImageButton {
                 id: searchButton
 
                 property bool searchActive: false
 
                 Layout.alignment: Qt.AlignVCenter
-                Layout.column: 6
+                Layout.column: 7
                 Layout.preferredHeight: Nheko.avatarSize - Nheko.paddingMedium
                 Layout.preferredWidth: Nheko.avatarSize - Nheko.paddingMedium
                 Layout.row: 1
@@ -242,7 +294,7 @@ Pane {
                 id: roomOptionsButton
 
                 Layout.alignment: Qt.AlignVCenter
-                Layout.column: 7
+                Layout.column: 8
                 Layout.preferredHeight: Nheko.avatarSize - Nheko.paddingMedium
                 Layout.preferredWidth: Nheko.avatarSize - Nheko.paddingMedium
                 Layout.row: 1
@@ -448,5 +500,12 @@ Pane {
     }
     HoverHandler {
         grabPermissions: PointerHandler.TakeOverForbidden | PointerHandler.CanTakeOverFromAnything
+    }
+        Component.onCompleted: {
+        if (room) {
+            room.callParticipantsCountChanged.connect(function() {
+                console.log("QML: callParticipantsCount changed to", room.callParticipantsCount)
+            })
+        }
     }
 }

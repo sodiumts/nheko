@@ -1,5 +1,7 @@
 cmake_minimum_required(VERSION 3.13...3.21)
 
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+
 option(APPVEYOR_BUILD "Build on appveyor" OFF)
 option(CI_BUILD "Set when building in CI. Enables -Werror where possible" OFF)
 option(ASAN "Compile with address sanitizers" OFF)
@@ -164,7 +166,7 @@ if(USE_BUNDLED_LIBEVENT)
     hunter_add_package_safe(Libevent)
     find_package(Libevent CONFIG REQUIRED)
 else()
-    find_package(PkgConfig REQUIRED) 
+    find_package(PkgConfig REQUIRED)
     pkg_check_modules(libevent_core REQUIRED IMPORTED_TARGET libevent_core)
     if(WIN32)
         pkg_check_modules(libevent_windows REQUIRED IMPORTED_TARGET libevent_windows)
@@ -182,7 +184,7 @@ if(USE_BUNDLED_LIBCURL)
     hunter_add_package_safe(CURL)
     find_package(CURL CONFIG REQUIRED)
 else()
-    find_package(PkgConfig REQUIRED) 
+    find_package(PkgConfig REQUIRED)
     pkg_check_modules(libcurl REQUIRED IMPORTED_TARGET libcurl)
 endif()
 
@@ -252,7 +254,7 @@ endif()
 # Discover Qt dependencies.
 #
 
-find_package(Qt6 6.5 COMPONENTS Core Widgets Gui LinguistTools Svg Multimedia Qml QuickControls2 REQUIRED)
+find_package(Qt6 6.5 COMPONENTS Core Widgets Gui LinguistTools Svg Multimedia Qml QuickControls2 WebSockets REQUIRED)
 if (Qt6Qml_VERSION VERSION_GREATER_EQUAL "6.10.0")
     find_package(Qt6 REQUIRED COMPONENTS GuiPrivate QmlPrivate)
 endif()
@@ -440,6 +442,12 @@ set(SRC_FILES
     src/voip/WebRTCSession.h
     src/voip/WebRTCSession.cpp
     src/voip/WebRTCSession.h
+    src/voip/GStreamerSFUSession.cpp
+    src/voip/GStreamerSFUSession.h
+    src/voip/LiveKitSession.cpp
+    src/voip/LiveKitSession.h
+    src/voip/MatrixRTCSession.cpp
+    src/voip/MatrixRTCSession.h
 
     src/encryption/DeviceVerificationFlow.cpp
     src/encryption/DeviceVerificationFlow.h
@@ -642,6 +650,24 @@ if(VOIP)
     if (WIN32)
         pkg_check_modules(GSTREAMER REQUIRED IMPORTED_TARGET gstreamer-d3d11-1.0)
     endif()
+
+    find_package(Protobuf REQUIRED)
+
+    set(LIVEKIT_PROTO_DIR "${CMAKE_CURRENT_SOURCE_DIR}/src/voip/livekit")
+    set(LIVEKIT_PROTO_FILES
+        ${LIVEKIT_PROTO_DIR}/livekit_rtc.proto
+        ${LIVEKIT_PROTO_DIR}/livekit_models.proto
+        ${LIVEKIT_PROTO_DIR}/livekit_room.proto
+        ${LIVEKIT_PROTO_DIR}/livekit_agent.proto
+        ${LIVEKIT_PROTO_DIR}/livekit_agent_dispatch.proto
+        ${LIVEKIT_PROTO_DIR}/livekit_metrics.proto
+        ${LIVEKIT_PROTO_DIR}/livekit_egress.proto
+        ${LIVEKIT_PROTO_DIR}/logger/options.proto
+    )
+
+    set(PROTOBUF_IMPORT_DIRS ${LIVEKIT_PROTO_DIR})
+    set(PROTOBUF_GENERATE_CPP_APPEND_PATH OFF)
+    protobuf_generate_cpp(LIVEKIT_PROTO_SRCS LIVEKIT_PROTO_HDRS ${LIVEKIT_PROTO_FILES})
 endif()
 
 if(X11 AND NOT WIN32 AND NOT APPLE AND NOT HAIKU)
@@ -834,7 +860,7 @@ set(QML_SOURCES
     resources/qml/voip/PlaceCall.qml
     resources/qml/voip/ScreenShare.qml
     resources/qml/voip/VideoCall.qml
-	resources/qml/voip/VideoCallD3D11.qml
+    resources/qml/voip/VideoCallD3D11.qml
     resources/qml/delegates/EncryptionEnabled.qml
     resources/qml/ui/TimelineEffects.qml
 )
@@ -850,9 +876,9 @@ qt_add_qml_module(nheko
     src/UserDirectoryModel.cpp
     src/UserDirectoryModel.h
 )
-    #qt_target_qml_sources(nheko
-    #   #PREFIX "/"
-    #)
+#qt_target_qml_sources(nheko
+#   #PREFIX "/"
+#)
 
 #set_target_properties(nheko PROPERTIES
 #    QT_QMLCACHEGEN_ARGUMENTS "--verbose"
@@ -929,12 +955,13 @@ target_link_libraries(nheko PRIVATE
     Qt::Qml
     Qt::QmlPrivate
     Qt::QuickControls2
+    Qt::WebSockets
     qt6keychain
     KDAB::kdsingleapplication
     nlohmann_json::nlohmann_json
     lmdbxx::lmdbxx
     liblmdb::lmdb)
-    
+
 if(UNIX)
     # for wayland activation tokens
     target_link_libraries(nheko PRIVATE Qt::GuiPrivate)
@@ -951,6 +978,25 @@ endif()
 if(TARGET PkgConfig::GSTREAMER)
     target_link_libraries(nheko PRIVATE PkgConfig::GSTREAMER)
     target_compile_definitions(nheko PRIVATE GSTREAMER_AVAILABLE)
+
+    target_sources(nheko PRIVATE ${LIVEKIT_PROTO_SRCS})
+    target_include_directories(nheko PRIVATE ${CMAKE_CURRENT_BINARY_DIR})
+
+    find_package(PkgConfig REQUIRED)
+    pkg_check_modules(PROTOBUF REQUIRED protobuf)
+    target_link_libraries(nheko PRIVATE ${PROTOBUF_LIBRARIES})
+
+    target_link_libraries(nheko PRIVATE
+        -labsl_log_internal_check_op
+        -labsl_log_internal_message
+        -labsl_log_initialize
+        -labsl_strings
+        -labsl_synchronization
+        -labsl_time
+        -labsl_status
+        -labsl_cord
+        -labsl_hash
+    )
 endif()
 if(TARGET PkgConfig::XCB)
     target_link_libraries(nheko PRIVATE PkgConfig::XCB)

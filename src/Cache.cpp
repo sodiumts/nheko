@@ -2215,9 +2215,15 @@ Cache::getStateEvent(lmdb::txn &txn, const std::string &room_id, std::string_vie
             auto db_ = getStatesKeyDb(txn, room_id);
             // we can search using state key, since the compare functions defaults to the whole
             // string, when there is no nullbyte
-            std::string_view data     = state_key;
+            std::string state_key_stored = std::string(state_key);
+            if (state_key_stored.size() > 200) {
+                state_key_stored = QCryptographicHash::hash(
+                    QByteArray::fromStdString(state_key_stored),
+                    QCryptographicHash::Sha256
+                ).toHex().toStdString();
+            }
+            std::string_view data     = state_key_stored;
             std::string_view typeStrV = typeStr;
-
             auto cursor = lmdb::cursor::open(txn, db_);
             if (!cursor.get(typeStrV, data, MDB_GET_BOTH))
                 return std::nullopt;
@@ -2300,6 +2306,22 @@ Cache::saveStateEvents(lmdb::txn &txn,
         saveStateEvent(txn, statesdb, stateskeydb, membersdb, eventsDb, room_id, e);
 }
 
+static std::string
+storedStateKey(const std::string &state_key)
+{
+    if (state_key.size() <= 200)
+        return state_key;
+
+    auto hashed = QCryptographicHash::hash(
+        QByteArray::fromStdString(state_key),
+        QCryptographicHash::Sha256
+    ).toHex().toStdString();
+
+    nhlog::db()->debug("Hashing long state key ({} bytes): {} -> {}",
+        state_key.size(), state_key, hashed);
+    return hashed;
+}
+
 template<class T>
 void
 Cache::saveStateEvent(lmdb::txn &txn,
@@ -2361,37 +2383,69 @@ Cache::saveStateEvent(lmdb::txn &txn,
     std::visit(
       [&txn, &statesdb, &stateskeydb, &eventsDb, &membersdb](const auto &e) {
           if constexpr (isStateEvent_<decltype(e)>) {
-              eventsDb.put(txn, e.event_id, nlohmann::json(e).dump());
+              if (e.event_id.empty()) {
+                  nhlog::db()->warn("Skipping state event with empty event_id, type='{}'",
+                      to_string(e.type));
+                  return;
+              }
+
+
+              nhlog::db()->debug("visiting event: type='{}' state_key='{}' ({}B) event_id='{}' ({}B)",
+                  to_string(e.type),
+                  e.state_key, e.state_key.size(),
+                  e.event_id, e.event_id.size());
+
+              auto jsonDump = nlohmann::json(e).dump();
+              nhlog::db()->debug("event json size: {}B", jsonDump.size());
+
+              try {
+                  eventsDb.put(txn, e.event_id, jsonDump);
+              } catch (const lmdb::error &err) {
+                  nhlog::db()->error("eventsDb.put failed: {} | event_id='{}' ({}B) json={}B",
+                      err.what(), e.event_id, e.event_id.size(), jsonDump.size());
+                  throw;
+              }
 
               if (e.type != EventType::Unsupported) {
                   if (std::is_same_v<std::remove_cv_t<std::remove_reference_t<decltype(e)>>,
                                      StateEvent<mtx::events::msg::Redacted>>) {
-                      // apply the redaction event
                       if (e.type == EventType::RoomMember) {
-                          // membership is not revoked, but names are yeeted (so we set the name
-                          // to the mxid)
                           MemberInfo tmp{e.state_key, ""};
                           membersdb.put(txn, e.state_key, nlohmann::json(tmp).dump());
                       } else if (e.state_key.empty()) {
-                          // strictly speaking some stuff in those events can be redacted, but
-                          // this is close enough. Ref:
-                          // https://spec.matrix.org/v1.6/rooms/v10/#redactions
                           if (e.type != EventType::RoomCreate &&
                               e.type != EventType::RoomJoinRules &&
                               e.type != EventType::RoomPowerLevels &&
                               e.type != EventType::RoomHistoryVisibility)
                               statesdb.del(txn, to_string(e.type));
-                      } else
-                          stateskeydb.del(txn, to_string(e.type), e.state_key + '\0' + e.event_id);
+                      } else {
+                          auto redact_state_key = e.state_key.size() > 200
+                              ? QCryptographicHash::hash(
+                                  QByteArray::fromStdString(e.state_key),
+                                  QCryptographicHash::Sha256
+                                ).toHex().toStdString()
+                              : e.state_key;
+                          stateskeydb.del(txn, to_string(e.type), redact_state_key + '\0' + e.event_id);
+                      }
                   } else if (e.state_key.empty()) {
                       statesdb.put(txn, to_string(e.type), nlohmann::json(e).dump());
                   } else {
-                      auto data = e.state_key + '\0' + e.event_id;
-                      auto key  = to_string(e.type);
+                      auto state_key_stored = storedStateKey(e.state_key);
+                          auto data = state_key_stored + '\0' + e.event_id;
+                          auto key  = to_string(e.type);
 
-                      // Work around https://bugs.openldap.org/show_bug.cgi?id=8447
-                      stateskeydb.del(txn, key, data);
-                      stateskeydb.put(txn, key, data);
+                          nhlog::db()->debug("stateskeydb put: key='{}' ({}B) data='{}' ({}B)",
+                              key, key.size(),
+                              e.state_key,
+                              data.size());
+
+                          if (key.size() > 511 || data.size() > 511) {
+                              nhlog::db()->error("LMDB size exceeded! key={}B data={}B state_key='{}' event_id='{}'",
+                                  key.size(), data.size(), e.state_key, e.event_id);
+                          }
+
+                          stateskeydb.del(txn, key, data);
+                          stateskeydb.put(txn, key, data);
                   }
               }
           }
@@ -6413,9 +6467,11 @@ NHEKO_CACHE_GET_STATE_EVENT_DEFINITION(mtx::events::state::Create)
 NHEKO_CACHE_GET_STATE_EVENT_DEFINITION(mtx::events::state::ServerAcl)
 NHEKO_CACHE_GET_STATE_EVENT_DEFINITION(mtx::events::state::space::Child)
 NHEKO_CACHE_GET_STATE_EVENT_DEFINITION(mtx::events::state::space::Parent)
+NHEKO_CACHE_GET_STATE_EVENT_DEFINITION(mtx::events::state::CallMember)
 
 NHEKO_CACHE_GET_STATE_EVENTS_DEFINITION(mtx::events::state::Widget)
 NHEKO_CACHE_GET_STATE_EVENTS_DEFINITION(mtx::events::state::space::Parent)
 NHEKO_CACHE_GET_STATE_EVENTS_DEFINITION(mtx::events::msc2545::ImagePack)
+NHEKO_CACHE_GET_STATE_EVENTS_DEFINITION(mtx::events::state::CallMember)
 
 #include "moc_Cache_p.cpp"

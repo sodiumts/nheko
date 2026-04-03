@@ -50,7 +50,7 @@ Rectangle {
             hoverEnabled: true
             image: CallManager.isOnCall ? ":/icons/icons/ui/end-call.svg" : ":/icons/icons/ui/place-call.svg"
             opacity: (CallManager.haveCallInvite || CallManager.isOnCallOnOtherDevice) ? 0.3 : 1
-            visible: CallManager.callsSupported && showAllButtons
+            visible: CallManager.callsSupported && showAllButtons && room.roomMemberCount <= 2
             Layout.preferredWidth: 22
 
             onClicked: {
@@ -69,6 +69,32 @@ Rectangle {
                 }
             }
         }
+
+        ImageButton {
+            Layout.alignment: Qt.AlignBottom
+            Layout.margins: 8
+            ToolTip.text: room && room.callParticipantsCount > 0
+                ? qsTr("Join group call (%1)").arg(room.callParticipantsCount)
+                : qsTr("Start group call")
+            ToolTip.visible: hovered
+            Layout.preferredHeight: 22
+            Layout.preferredWidth: 22
+            hoverEnabled: true
+            visible: CallManager.callsSupported && showAllButtons && room && room.roomMemberCount > 2
+            opacity: 1
+            image: room && room.isInCall
+                ? ":/icons/icons/ui/end-call.svg"
+                : ":/icons/icons/ui/place-call.svg"
+            onClicked: {
+                if (room) {
+                    if (room.isInCall)
+                        room.leaveCall()
+                    else
+                        room.joinCall()
+                }
+            }
+        }
+
         ImageButton {
             Layout.alignment: Qt.AlignBottom
             Layout.margins: 8
