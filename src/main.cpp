@@ -425,12 +425,16 @@ main(int argc, char *argv[])
         w.saveCurrentWindowSize();
         if (http::client() != nullptr) {
             nhlog::net()->debug("shutting down all I/O threads & open connections");
+            // Disconnect from matrix rtc calls
+            ChatPage::instance()->matrixRTC()->leave();
             http::client()->close(true);
             nhlog::net()->debug("bye");
         }
         // This is required in order to destroy CallManager's QMediaPlayer, in turn allowing it
         // to destroy its GstPipeline so that gst_deinit() can return.
         ChatPage::instance()->callManager()->deleteLater();
+        // Same with matrix rtc
+        ChatPage::instance()->matrixRTC()->deleteLater();
     });
 
     // It seems like handling the message in a blocking manner is a no-go. I have no idea how to
