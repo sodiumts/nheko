@@ -538,7 +538,7 @@ TimelineModel::TimelineModel(TimelineViewManager *manager, QString room_id, QObj
         room_id_.toStdString(), mtx::events::EventType::CallMember);
 
     for (const auto &event : callMemberEvents) {
-        if (event.sender.empty() || event.content.empty || event.content.memberships.empty())
+        if (event.sender.empty() || event.content.application.empty())
             continue;
         updateCallParticipants(event);
     }
@@ -791,25 +791,20 @@ TimelineModel::data(const mtx::events::collections::TimelineEvents &event, int r
                   else if constexpr (t == mtx::events::EventType::RoomMember)
                       return formatMemberEvent(e);
                   else if constexpr (t == mtx::events::EventType::CallMember) {
-                      if (e.content.empty || e.content.memberships.empty()) {
-                          return tr("%1 left the call")
-                              .arg(displayName(QString::fromStdString(e.sender)));
+                      if (e.content.application.empty()) {
+                          return tr("%1 left the call").arg(displayName(QString::fromStdString(e.sender)));
                       }
 
                       bool isUpdate = false;
-                          if (!e.unsigned_data.replaces_state.empty()) {
-                              const auto &m = e.content.memberships.front();
-                              if (m.created_ts > 0) {
-                                  isUpdate = true;
-                              }
+                      if (!e.unsigned_data.replaces_state.empty()) {
+                          // Use the flattened created_ts field
+                          if (e.content.created_ts > 0) {
+                              isUpdate = true;
                           }
-
-                          if (isUpdate)
-                              return tr("%1 updated their call status.")
-                                  .arg(displayName(QString::fromStdString(e.sender)));
-
-                          return tr("%1 joined the call.")
-                              .arg(displayName(QString::fromStdString(e.sender)));
+                      }
+                      if (isUpdate)
+                          return tr("%1 updated their call status.").arg(displayName(QString::fromStdString(e.sender)));
+                      return tr("%1 joined the call.").arg(displayName(QString::fromStdString(e.sender)));
                   }
 
                   return tr("%1 changed unknown state event %2.")
@@ -1184,8 +1179,8 @@ TimelineModel::syncState(const mtx::responses::State &s)
         } else if (std::holds_alternative<StateEvent<state::CallMember>>(e)) {
             nhlog::ui()->info("Received call member state update\n");
             auto ev = std::get<StateEvent<state::CallMember>>(e);
-            nhlog::ui()->info("Initial call member: user={} empty={}", ev.sender, ev.content.memberships.empty());
-            updateCallParticipants(std::get<StateEvent<state::CallMember>>(e));
+            nhlog::ui()->info("Initial call member: user={} application={}", ev.sender, ev.content.application);
+            updateCallParticipants(ev);
         } else {
             nhlog::ui()->info("Received sync unknown");
         }
@@ -1276,15 +1271,15 @@ TimelineModel::addEvents(const mtx::responses::Timeline &timeline)
             const auto &event = std::get<StateEvent<state::CallMember>>(e);
             const auto &content = event.content;
 
-            if (content.empty || content.memberships.empty()) {
+            if (content.application.empty()) {  // Leave event
                 nhlog::ui()->info("User/device {} left the call", event.state_key);
-            } else {
-                const auto &m = content.memberships.front();
+            } else {  // Join or update
                 nhlog::ui()->info("User/device {} joined - device: {}, intent: {}, expires in {}ms",
-                    event.state_key, m.device_id, m.intent, m.expires);
-                for (const auto &focus : m.foci_preferred)
-                nhlog::ui()->info("  Focus: {} {} ({})",
-                    focus.type, focus.livekit_service_url, focus.livekit_alias);
+                    event.state_key, content.device_id, content.intent, content.expires);
+                for (const auto &focus : content.foci_preferred) {
+                    nhlog::ui()->info("  Focus: {} {} ({})",
+                        focus.type, focus.livekit_service_url, focus.livekit_alias);
+                }
             }
 
             updateCallParticipants(event);
@@ -1428,25 +1423,20 @@ void TimelineModel::updateCallParticipants(const mtx::events::StateEvent<mtx::ev
     const QString userId = QString::fromStdString(event.sender);
     bool changed = false;
 
-    nhlog::ui()->info("updateCallParticipants: user={} memberships empty={}",
-                      userId.toStdString(),
-                      content.memberships.empty() ? 1 : 0);
+    nhlog::ui()->info("updateCallParticipants: user={} application={}",
+                      userId.toStdString(), content.application);
 
-    if (content.memberships.empty()) {
+    if (content.application.empty()) {
+        // Leave event
         if (activeCallParticipants_.remove(userId)) {
             changed = true;
             nhlog::ui()->info("Removed user {} from active participants", userId.toStdString());
         }
     } else {
         int64_t now = QDateTime::currentMSecsSinceEpoch();
-        bool isActive = false;
-        for (const auto& membership : content.memberships) {
-            int64_t expiryTime = event.origin_server_ts + membership.expires;
-            if (expiryTime > now) {
-                isActive = true;
-                break;
-            }
-        }
+        int64_t expiryTime = event.origin_server_ts + content.expires;
+        bool isActive = (expiryTime > now);
+
         if (isActive) {
             if (!activeCallParticipants_.contains(userId)) {
                 activeCallParticipants_.insert(userId);
@@ -2379,8 +2369,7 @@ TimelineModel::copyLinkToEvent(const QString &eventId) const
 void
 TimelineModel::joinCall()
 {
-    RTCSession_ = new MatrixRTCSession(room_id_.toStdString(), http::client()->user_id().to_string(), http::client()->device_id(), this);
-    RTCSession_->join();
+    ChatPage::instance()->matrixRTC()->join(room_id_.toStdString(), http::client()->user_id().to_string(), http::client()->device_id());
     isInCall_ = true;
     emit isInCallChanged();
 }
@@ -2388,8 +2377,7 @@ TimelineModel::joinCall()
 void
 TimelineModel::leaveCall()
 {
-    RTCSession_->leave();
-    delete RTCSession_;
+    ChatPage::instance()->matrixRTC()->leave();
     isInCall_ = false;
     emit isInCallChanged();
 }
@@ -3346,10 +3334,10 @@ TimelineModel::resetState()
     callParticipantsCount_ = 0;
 
     auto callMemberEvents = cache::client()->getStateEventsWithType<mtx::events::state::CallMember>(
-        room_id_.toStdString(), mtx::events::EventType::CallMember);
+            room_id_.toStdString(), mtx::events::EventType::CallMember);
     for (const auto &event : callMemberEvents) {
-        if (event.sender.empty() || event.content.empty || event.content.memberships.empty())
-            continue;
+        if (event.sender.empty() || event.content.application.empty())
+            continue;  // skip leave events (empty application)
         updateCallParticipants(event);
     }
     emit callParticipantsCountChanged();

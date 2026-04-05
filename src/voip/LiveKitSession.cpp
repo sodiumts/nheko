@@ -2,7 +2,6 @@
 #ifdef GSTREAMER_AVAILABLE
 
 #include "LiveKitSession.h"
-#include <QJsonDocument>
 #include <QJsonObject>
 #include <QNetworkRequest>
 #include <QUuid>
@@ -75,7 +74,7 @@ LiveKitSession::disconnect()
 }
 
 void
-LiveKitSession::setState(State state)
+LiveKitSession::setState(const State state)
 {
     if (state_ != state) {
         state_ = state;
@@ -103,19 +102,22 @@ LiveKitSession::sendSignalRequest(const livekit::SignalRequest &request)
         QByteArray(serialized.data(), static_cast<int>(serialized.size())));
 }
 
-void LiveKitSession::onWebSocketConnected()
+void
+LiveKitSession::onWebSocketConnected()
 {
     nhlog::net()->info("LiveKit: WebSocket connected, waiting for JoinResponse");
 }
 
-void LiveKitSession::onWebSocketDisconnected()
+void
+LiveKitSession::onWebSocketDisconnected()
 {
     nhlog::net()->info("LiveKit: WebSocket disconnected");
     pingTimer_.stop();
     setState(State::Disconnected);
 }
 
-void LiveKitSession::onWebSocketError(QAbstractSocket::SocketError socketError)
+void
+LiveKitSession::onWebSocketError(const QAbstractSocket::SocketError socketError)
 {
     nhlog::net()->error("LiveKit: WebSocket error {}: {}",
                         static_cast<int>(socketError),
@@ -124,7 +126,8 @@ void LiveKitSession::onWebSocketError(QAbstractSocket::SocketError socketError)
     setState(State::Failed);
 }
 
-void LiveKitSession::onBinaryMessageReceived(const QByteArray &message)
+void
+LiveKitSession::onBinaryMessageReceived(const QByteArray &message)
 {
     livekit::SignalResponse response;
     if (!response.ParseFromArray(message.data(), message.size())) {
@@ -159,10 +162,12 @@ void LiveKitSession::onBinaryMessageReceived(const QByteArray &message)
         handleLeave(response.leave());
         break;
     case livekit::SignalResponse::kSpeakersChanged: {
-        const auto &speakers = response.speakers_changed().speakers();
-
-        for(const auto& speaker: speakers) {
-            nhlog::net()->debug("Speaker changed: sid={}, level={}, active={}", speaker.sid(), speaker.level(), speaker.active());
+        for (const auto &speakers = response.speakers_changed().speakers();
+             const auto &speaker : speakers) {
+            nhlog::net()->debug("Speaker changed: sid={}, level={}, active={}",
+                                speaker.sid(),
+                                speaker.level(),
+                                speaker.active());
         }
 
         break;
@@ -184,7 +189,8 @@ void LiveKitSession::onBinaryMessageReceived(const QByteArray &message)
     }
 }
 
-void LiveKitSession::handleJoin(const livekit::JoinResponse &join)
+void
+LiveKitSession::handleJoin(const livekit::JoinResponse &join)
 {
     nhlog::net()->info("LiveKit: joined room '{}' as '{}'",
                        join.room().name(),
@@ -221,7 +227,20 @@ LiveKitSession::buildTurnUris() const
     }
     return fullUris;
 }
-void LiveKitSession::handleOffer(const livekit::SessionDescription &offer)
+
+void
+LiveKitSession::setDecryptionKey(uint8_t kid, const std::vector<uint8_t> &rawKey)
+{
+    if (sfuSession_) {
+        sfuSession_->setDecryptionKey(kid, rawKey);
+    } else {
+        nhlog::net()->info("LiveKit: buffering decryption key for KID {} (sfuSession not ready)", kid);
+        pendingDecryptionKeys_[kid] = rawKey;
+    }
+}
+
+void
+LiveKitSession::handleOffer(const livekit::SessionDescription &offer)
 {
     nhlog::net()->info("LiveKit: received offer (type={})", offer.type());
     nhlog::net()->info("LiveKit: offer SDP preview: {}",
@@ -230,38 +249,45 @@ void LiveKitSession::handleOffer(const livekit::SessionDescription &offer)
     if (!sfuSession_) {
         sfuSession_ = new GStreamerSFUSession(this);
 
-        QObject::connect(sfuSession_, &GStreamerSFUSession::subscriberAnswerCreated,
-            this, &LiveKitSession::sendAnswer);
-        QObject::connect(sfuSession_, &GStreamerSFUSession::subscriberICECandidate,
-            this, [this](const std::string &candidate,
-                const std::string &sdpMid,
-                int sdpMLineIndex) {
-                    sendICECandidate(candidate, sdpMid, sdpMLineIndex,
-                        livekit::SignalTarget::SUBSCRIBER);
-                });
-        QObject::connect(sfuSession_, &GStreamerSFUSession::failed,
-            this, [this](const QString &reason) {
-                emit error(reason);
-            });
+        QObject::connect(sfuSession_,
+                         &GStreamerSFUSession::subscriberAnswerCreated,
+                         this,
+                         &LiveKitSession::sendAnswer);
+
+        QObject::connect(
+          sfuSession_,
+          &GStreamerSFUSession::subscriberICECandidate,
+          this,
+          [this](const std::string &candidate, const std::string &sdpMid, const int sdpMLineIndex) {
+              sendICECandidate(candidate, sdpMid, sdpMLineIndex, livekit::SignalTarget::SUBSCRIBER);
+          });
+
+        QObject::connect(sfuSession_,
+                         &GStreamerSFUSession::failed,
+                         this,
+                         [this](const QString &reason) { emit error(reason); });
 
         sfuSession_->setTurnServers(buildTurnUris());
+
+        flushPendingDecryptionKeys();
 
         if (!sfuSession_->initSubscriber(offer.sdp()))
             emit error(QStringLiteral("Failed to initialize subscriber pipeline"));
     } else {
-        // Subsequent offer — renegotiation (audio/video tracks being added)
         nhlog::net()->info("LiveKit: renegotiation offer received");
         if (!sfuSession_->acceptRenegotiationOffer(offer.sdp()))
             emit error(QStringLiteral("Failed to accept renegotiation offer"));
     }
 }
 
-void LiveKitSession::handleAnswer(const livekit::SessionDescription &answer)
+void
+LiveKitSession::handleAnswer([[maybe_unused]] const livekit::SessionDescription &answer)
 {
     // TODO: Actually implement this
     nhlog::net()->info("LiveKit: received publisher answer (not handled yet)");
 }
-void LiveKitSession::setTurnServers(const std::vector<std::string> &uris,
+void
+LiveKitSession::setTurnServers(const std::vector<std::string> &uris,
                                      const std::string &username,
                                      const std::string &credential) {
     turnUris_ = uris;
@@ -269,7 +295,8 @@ void LiveKitSession::setTurnServers(const std::vector<std::string> &uris,
     turnCredential_ = credential;
 }
 
-void LiveKitSession::handleTrickle(const livekit::TrickleRequest &trickle)
+void
+LiveKitSession::handleTrickle(const livekit::TrickleRequest &trickle)
 {
     nhlog::net()->info("LiveKit: trickle received target={} candidate={}",
                        static_cast<int>(trickle.target()),
@@ -292,7 +319,8 @@ void LiveKitSession::handleTrickle(const livekit::TrickleRequest &trickle)
         candidateJson[QStringLiteral("sdpMLineIndex")].toInt());
 }
 
-void LiveKitSession::handleParticipantUpdate(const livekit::ParticipantUpdate &update)
+void
+LiveKitSession::handleParticipantUpdate(const livekit::ParticipantUpdate &update)
 {
     for (const auto &p : update.participants()) {
         if (p.identity() == localParticipantIdentity_)
@@ -305,7 +333,8 @@ void LiveKitSession::handleParticipantUpdate(const livekit::ParticipantUpdate &u
     }
 }
 
-void LiveKitSession::handleTrackPublished(const livekit::TrackPublishedResponse &published)
+void
+LiveKitSession::handleTrackPublished(const livekit::TrackPublishedResponse &published)
 {
     nhlog::net()->info("LiveKit: track published cid={} sid={}",
                        published.cid(), published.track().sid());
@@ -315,7 +344,8 @@ void LiveKitSession::handleTrackPublished(const livekit::TrackPublishedResponse 
     }
 }
 
-void LiveKitSession::handleLeave(const livekit::LeaveRequest &leave)
+void
+LiveKitSession::handleLeave(const livekit::LeaveRequest &leave)
 {
     nhlog::net()->info("LiveKit: server requested leave reason={}",
                        static_cast<int>(leave.reason()));
@@ -323,13 +353,15 @@ void LiveKitSession::handleLeave(const livekit::LeaveRequest &leave)
     disconnect();
 }
 
-void LiveKitSession::publishMicrophone()
+void
+LiveKitSession::publishMicrophone()
 {
-    // Publisher PC not implemented yet — subscriber only for now
+    // TODO: implement microphone publishing
     nhlog::net()->info("LiveKit: publishMicrophone() not yet implemented");
 }
 
-void LiveKitSession::toggleMicMute()
+void
+LiveKitSession::toggleMicMute()
 {
     micMuted_ = !micMuted_;
     if (sfuSession_)
@@ -338,7 +370,8 @@ void LiveKitSession::toggleMicMute()
         sendMuteTrack(micTrackSid_, micMuted_);
 }
 
-void LiveKitSession::sendAnswer(const std::string &sdp)
+void
+LiveKitSession::sendAnswer(const std::string &sdp)
 {
     livekit::SignalRequest request;
     auto *answer = request.mutable_answer();
@@ -348,7 +381,8 @@ void LiveKitSession::sendAnswer(const std::string &sdp)
     nhlog::net()->info("LiveKit: sent subscriber answer");
 }
 
-void LiveKitSession::sendICECandidate(const std::string &candidate,
+void
+LiveKitSession::sendICECandidate(const std::string &candidate,
                                        const std::string &sdpMid,
                                        int sdpMLineIndex,
                                        livekit::SignalTarget target)
@@ -366,7 +400,8 @@ void LiveKitSession::sendICECandidate(const std::string &candidate,
     sendSignalRequest(request);
 }
 
-void LiveKitSession::sendAddTrack(const std::string &cid,
+void
+LiveKitSession::sendAddTrack(const std::string &cid,
                                    const std::string &name,
                                    livekit::TrackType type)
 {
@@ -381,7 +416,8 @@ void LiveKitSession::sendAddTrack(const std::string &cid,
     sendSignalRequest(request);
 }
 
-void LiveKitSession::sendMuteTrack(const std::string &sid, bool muted)
+void
+LiveKitSession::sendMuteTrack(const std::string &sid, bool muted)
 {
     livekit::SignalRequest request;
     auto *mute = request.mutable_mute();
@@ -390,7 +426,8 @@ void LiveKitSession::sendMuteTrack(const std::string &sid, bool muted)
     sendSignalRequest(request);
 }
 
-void LiveKitSession::sendPing()
+void
+LiveKitSession::sendPing()
 {
     livekit::SignalRequest request;
     request.mutable_ping_req()->set_timestamp(
@@ -398,7 +435,23 @@ void LiveKitSession::sendPing()
     sendSignalRequest(request);
 }
 
-void LiveKitSession::onPingTimer()
+void
+LiveKitSession::flushPendingDecryptionKeys()
+{
+    if (!sfuSession_ || pendingDecryptionKeys_.empty())
+        return;
+
+    nhlog::net()->info("LiveKit: flushing {} pending decryption key(s) into sfuSession",
+                       pendingDecryptionKeys_.size());
+
+    for (const auto &[kid, rawKey] : pendingDecryptionKeys_) {
+        sfuSession_->setDecryptionKey(kid, rawKey);
+    }
+    pendingDecryptionKeys_.clear();
+}
+
+void
+LiveKitSession::onPingTimer()
 {
     sendPing();
 }

@@ -10,21 +10,23 @@
 #include "MatrixClient.h"
 #include "TimelineModel.h"
 
-MatrixRTCSession::MatrixRTCSession(const std::string &roomId,
-                                    const std::string &userId,
-                                    const std::string &deviceId,
-                                    QObject *parent)
+MatrixRTCSession* MatrixRTCSession::instance_ = nullptr;
+
+MatrixRTCSession* MatrixRTCSession::instance() {
+    Q_ASSERT(instance_ != nullptr);
+    return instance_;
+}
+
+MatrixRTCSession::MatrixRTCSession(QObject *parent)
   : QObject(parent)
-  , roomId_(roomId)
-  , userId_(userId)
-  , deviceId_(deviceId)
-  , stateKey_("_" + userId + "_" + deviceId + "_m.call")
 {
     connect(&membershipRefreshTimer_, &QTimer::timeout,
             this, &MatrixRTCSession::refreshMembership);
+    instance_ = this;
 }
 
 MatrixRTCSession::~MatrixRTCSession() {
+    instance_ = nullptr;
 }
 
 
@@ -44,12 +46,14 @@ void MatrixRTCSession::fetchOpenidToken() {
             }, Qt::QueuedConnection);
         });
 }
-void MatrixRTCSession::requestLiveKitJWT(const mtx::responses::MatrixOpenidToken &openidtoken) {
+void MatrixRTCSession::requestLiveKitJWT(const mtx::responses::MatrixOpenidToken &openIDToken) {
     if (!nam_) {
         nam_ = new QNetworkAccessManager(this);
         connect(nam_, &QNetworkAccessManager::finished, this, &MatrixRTCSession::onCredentialsReceived);
     }
-    QUrl url("https://livekit.ernests.id.lv/get_token");
+    // TODO: Change this to no longer be a static url as well as make it refresh the token each time
+    // livekit requests to refresh
+    const QUrl url("https://livekit.ernests.id.lv/get_token");
     QNetworkRequest request(url);
     request.setHeader(QNetworkRequest::ContentTypeHeader, "application/json");
 
@@ -58,9 +62,9 @@ void MatrixRTCSession::requestLiveKitJWT(const mtx::responses::MatrixOpenidToken
     payload["slot_id"] = "m.call#ROOM"; // No idea why, element sets it like this, and it does then connect to the same one as an element client
 
     QJsonObject openidObj;
-    openidObj["matrix_server_name"] = QString::fromStdString(openidtoken.matrix_server_name);
-    openidObj["access_token"] = QString::fromStdString(openidtoken.access_token);
-    openidObj["token_type"] = QString::fromStdString(openidtoken.token_type);
+    openidObj["matrix_server_name"] = QString::fromStdString(openIDToken.matrix_server_name);
+    openidObj["access_token"] = QString::fromStdString(openIDToken.access_token);
+    openidObj["token_type"] = QString::fromStdString(openIDToken.token_type);
     payload["openid_token"] = openidObj;
 
     QJsonObject memberObj;
@@ -69,13 +73,19 @@ void MatrixRTCSession::requestLiveKitJWT(const mtx::responses::MatrixOpenidToken
     memberObj["claimed_user_id"] = QString::fromStdString(userId_);
     payload["member"] = memberObj;
 
-    QByteArray postData = QJsonDocument(payload).toJson();
+    const QByteArray postData = QJsonDocument(payload).toJson();
 
     nam_->post(request, postData);
 }
 
-void MatrixRTCSession::join()
+void MatrixRTCSession::join(const std::string &roomId,
+                           const std::string &userId,
+                           const std::string &deviceI)
 {
+    roomId_ = roomId;
+    userId_ = userId;;
+    deviceId_ = deviceI;
+    stateKey_ = "_" + userId + "_" + deviceI + "_m.call";
     isActive_ = true;
 
     http::client()->get_turn_server([this](const mtx::responses::TurnServer &turn, mtx::http::RequestErr err) {
@@ -97,8 +107,8 @@ void MatrixRTCSession::onCredentialsReceived(QNetworkReply *reply)
         return;
     }
 
-    QByteArray data = reply->readAll();
-    QJsonDocument doc = QJsonDocument::fromJson(data);
+    const QByteArray data = reply->readAll();
+    const QJsonDocument doc = QJsonDocument::fromJson(data);
     if (doc.isNull() || !doc.isObject()) {
         nhlog::net()->error("Invalid JSON response from token service: {}", data.toStdString());
         emit error("Invalid response from token service");
@@ -107,8 +117,8 @@ void MatrixRTCSession::onCredentialsReceived(QNetworkReply *reply)
     }
 
     QJsonObject obj = doc.object();
-    QString wsUrl = obj["url"].toString();
-    QString jwt = obj["jwt"].toString();
+    const QString wsUrl = obj["url"].toString();
+    const QString jwt = obj["jwt"].toString();
     if (wsUrl.isEmpty() || jwt.isEmpty()) {
         nhlog::net()->error("Missing url or jwt in token response");
         emit error("Incomplete token response");
@@ -121,6 +131,12 @@ void MatrixRTCSession::onCredentialsReceived(QNetworkReply *reply)
         std::chrono::milliseconds(3600000 * 8 / 10));
 
     livekitSession_ = new LiveKitSession(this);
+
+    for (auto& [k, v]: pendingDecryptionKeys_) {
+        livekitSession_->setDecryptionKey(k, v);
+    }
+    pendingDecryptionKeys_.clear();
+
 
     connect(livekitSession_, &LiveKitSession::connected,
             this, &MatrixRTCSession::onLiveKitConnected);
@@ -174,33 +190,32 @@ void MatrixRTCSession::onLiveKitError(const QString &message)
 
 void MatrixRTCSession::sendMembershipEvent(bool leave)
 {
-    // per-device state key: _{userId}_{deviceId}_{callId}
     auto state_key = "_" + userId_ + "_" + deviceId_ + "_m.call";
 
     mtx::events::state::CallMember evt;
 
-    evt.empty = false;
     if (!leave) {
-        mtx::events::state::CallMemberMembership membership;
-        membership.application = "m.call";
-        membership.call_id     = "";
-        membership.scope       = "m.room";
-        membership.device_id   = deviceId_;
-        membership.expires     = 3600000; // 1 hour
-        membership.intent      = "audio";
+        evt.application = "m.call";
+        evt.call_id     = "";
+        evt.scope       = "m.room";
+        evt.device_id   = deviceId_;
+        evt.expires     = 3600000;
+        evt.intent      = "audio";
+        evt.membership_id = "";
+        evt.created_ts  = std::chrono::duration_cast<std::chrono::milliseconds>(
+                              std::chrono::system_clock::now().time_since_epoch())
+                              .count();
 
         mtx::events::state::CallMemberFocus focus;
         focus.type                = "livekit";
         focus.livekit_service_url = "https://livekit.ernests.id.lv";
         focus.livekit_alias       = roomId_;
-        membership.foci_preferred.push_back(focus);
+        evt.foci_preferred.push_back(focus);
 
         mtx::events::state::CallMemberActiveFocus activeFocus;
         activeFocus.type            = "livekit";
         activeFocus.focus_selection = "oldest_membership";
-        membership.focus_active     = activeFocus;
-
-        evt.memberships.push_back(membership);
+        evt.focus_active            = activeFocus;
     }
 
     http::client()->send_state_event<mtx::events::state::CallMember>(

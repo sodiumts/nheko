@@ -39,6 +39,10 @@ public:
 
     std::vector<std::string> buildTurnUris() const;
 
+    void setDecryptionKey(uint8_t kid, const std::vector<uint8_t> &rawKey);
+
+    GStreamerSFUSession *sfu_session() const { return sfuSession_; }
+
 signals:
     void connected();
     void disconnected();
@@ -75,8 +79,9 @@ private:
     void sendMuteTrack(const std::string &sid, bool muted);
     void sendPing();
 
+    void flushPendingDecryptionKeys();
+
     QWebSocket webSocket_;
-    GStreamerSFUSession *sfuSession_ = nullptr;
 
     State state_ = State::Disconnected;
     QString serverUrl_;
@@ -95,6 +100,9 @@ private:
     bool micMuted_ = false;
     QTimer pingTimer_;
     int pingInterval_ = 10000;
+
+    GStreamerSFUSession *sfuSession_ = nullptr;
+    std::map<uint8_t, std::vector<uint8_t>> pendingDecryptionKeys_;
 };
 
 #endif // GSTREAMER_AVAILABLE

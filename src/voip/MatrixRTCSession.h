@@ -17,16 +17,24 @@ class MatrixRTCSession : public QObject {
     Q_OBJECT
 
 public:
-    explicit MatrixRTCSession(const std::string &roomId,
-                               const std::string &userId,
-                               const std::string &deviceId,
-                               QObject *parent = nullptr);
-    ~MatrixRTCSession();
+    explicit MatrixRTCSession(QObject *parent = nullptr);
+    ~MatrixRTCSession() override;
 
-    void join();
+    static MatrixRTCSession* instance();
+
+    LiveKitSession* livekitSession() const { return livekitSession_; }
+
+    void join(const std::string &roomId,
+                               const std::string &userId,
+                               const std::string &deviceI);
     void leave();
 
     bool isActive() const { return isActive_; }
+
+    void storePendingDecryptionKey(const uint8_t kid, const std::vector<uint8_t>& rawKey)
+    {
+        pendingDecryptionKeys_[kid] = rawKey;
+    }
 
 signals:
     void joined();
@@ -44,7 +52,7 @@ private slots:
 private:
     void sendMembershipEvent(bool leave = false);
     void fetchOpenidToken();
-    void requestLiveKitJWT(const mtx::responses::MatrixOpenidToken &openidtoken);
+    void requestLiveKitJWT(const mtx::responses::MatrixOpenidToken &openIDToken);
 
     std::string roomId_;
     std::string userId_;
@@ -56,4 +64,8 @@ private:
     mtx::responses::TurnServer turnServers_;
     LiveKitSession *livekitSession_ = nullptr;
     QTimer membershipRefreshTimer_;
+
+    std::map<uint8_t, std::vector<uint8_t>> pendingDecryptionKeys_;
+
+    static MatrixRTCSession *instance_;
 };

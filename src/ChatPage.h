@@ -4,6 +4,8 @@
 
 #pragma once
 
+#include "MatrixRTCSession.h"
+
 #include <atomic>
 #include <optional>
 
@@ -49,6 +51,7 @@ public:
 
     QSharedPointer<UserSettings> userSettings() { return userSettings_; }
     CallManager *callManager() { return callManager_; }
+    MatrixRTCSession *matrixRTC() { return rtc_session_; }
     TimelineViewManager *timelineManager() { return view_manager_; }
     void deleteConfigs();
 
@@ -213,6 +216,7 @@ private:
 
     NotificationsManager *notificationsManager;
     CallManager *callManager_;
+    MatrixRTCSession *rtc_session_;
 
     std::unique_ptr<mtx::pushrules::PushRuleEvaluator> pushrules;
 

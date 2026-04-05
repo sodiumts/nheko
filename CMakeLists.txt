@@ -646,7 +646,7 @@ endif()
 
 if(VOIP)
     include(FindPkgConfig)
-    pkg_check_modules(GSTREAMER REQUIRED IMPORTED_TARGET gstreamer-sdp-1.0>=1.18 gstreamer-webrtc-1.0>=1.18 gstreamer-gl-1.0)
+    pkg_check_modules(GSTREAMER REQUIRED IMPORTED_TARGET gstreamer-sdp-1.0>=1.18 gstreamer-webrtc-1.0>=1.18 gstreamer-gl-1.0 gstreamer-rtp-1.0>=1.18)
     if (WIN32)
         pkg_check_modules(GSTREAMER REQUIRED IMPORTED_TARGET gstreamer-d3d11-1.0)
     endif()

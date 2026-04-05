@@ -368,15 +368,6 @@ Cache::isHiddenEvent(lmdb::txn &txn,
     if (mtx::accessors::relations(e).replaces())
         return true;
 
-    if (auto encryptedEvent = std::get_if<EncryptedEvent<msg::Encrypted>>(&e)) {
-        MegolmSessionIndex index;
-        index.room_id    = room_id;
-        index.session_id = encryptedEvent->content.session_id;
-
-        auto result = olm::decryptEvent(index, *encryptedEvent, true);
-        if (!result.error)
-            e = result.event.value();
-    }
 
     mtx::events::account_data::nheko_extensions::HiddenEvents hiddenEvents;
     hiddenEvents.hidden_event_types = std::vector{
@@ -4299,7 +4290,7 @@ Cache::saveTimelineMessages(lmdb::txn &txn,
             }
             eventsDb.put(txn, event_id, event.dump());
 
-            auto relations = mtx::accessors::relations(e);
+        auto relations = mtx::accessors::relations(e);
             if (!relations.relations.empty()) {
                 for (const auto &r : relations.relations) {
                     if (!r.event_id.empty()) {
