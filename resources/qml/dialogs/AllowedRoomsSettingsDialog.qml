@@ -24,7 +24,11 @@ ApplicationWindow {
     title: qsTr("Allowed rooms settings")
 
     Shortcut {
-        sequence: StandardKey.Cancel
+        sequences: [StandardKey.Cancel]
+        // We don't want this to steal the focus from other dialogs!
+        // Workaround for https://qt-project.atlassian.net/browse/QTBUG-141691
+        id: s
+        enabled: Nheko.focusWindow == Nheko.findWindow(s)
         onActivated: roomSettingsDialog.close()
     }
 

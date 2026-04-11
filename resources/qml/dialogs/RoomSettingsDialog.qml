@@ -4,12 +4,12 @@
 
 import ".."
 import "../ui"
-import QtQuick 2.15
-import QtQuick.Controls 2.3
-import QtQuick.Layouts 1.2
-import QtQuick.Window 2.13
+import QtQuick
+import QtQuick.Controls
+import QtQuick.Layouts
+import QtQuick.Window
 import QtQuick.Dialogs
-import im.nheko 1.0
+import im.nheko
 
 ApplicationWindow {
     id: roomSettingsDialog
@@ -27,7 +27,11 @@ ApplicationWindow {
     title: qsTr("Room Settings")
 
     Shortcut {
-        sequence: StandardKey.Cancel
+        sequences: [StandardKey.Cancel]
+        // We don't want this to steal the focus from other dialogs!
+        // Workaround for https://qt-project.atlassian.net/browse/QTBUG-141691
+        id: s
+        enabled: Nheko.focusWindow == Nheko.findWindow(s)
         onActivated: roomSettingsDialog.close()
     }
 

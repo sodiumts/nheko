@@ -7,6 +7,9 @@
 #include <QApplication>
 #include <QDesktopServices>
 #include <QGuiApplication>
+#include <QQuickItem>
+#include <QQuickRenderControl>
+#include <QQuickWindow>
 #include <QStyle>
 #include <QUrl>
 #include <QWindow>
@@ -30,6 +33,7 @@ Nheko::Nheko()
     connect(ChatPage::instance(), &ChatPage::contentLoaded, this, &Nheko::updateUserProfile);
     connect(ChatPage::instance(), &ChatPage::showRoomJoinPrompt, this, &Nheko::showRoomJoinPrompt);
     connect(this, &Nheko::joinRoom, ChatPage::instance(), &ChatPage::joinRoom);
+    connect(qGuiApp, &QGuiApplication::focusWindowChanged, this, &Nheko::focusWindowChanged);
 }
 
 void
@@ -218,6 +222,32 @@ Nheko::setWindowRole([[maybe_unused]] QWindow *win, [[maybe_unused]] QString new
                         role.size(),
                         role.data());
 #endif
+}
+
+QWindow *
+Nheko::focusWindow() const
+{
+    return QGuiApplication::focusWindow();
+}
+
+QWindow *
+Nheko::findWindow(QObject *obj) const
+{
+    while (obj && !obj->isWindowType()) {
+        if (auto item = qobject_cast<QQuickItem *>(obj); item && item->window()) {
+            obj = item->window();
+            break;
+        }
+
+        obj = obj->parent();
+    }
+
+    if (QWindow *renderWindow =
+          QQuickRenderControl::renderWindowFor(qobject_cast<QQuickWindow *>(obj))) {
+        obj = renderWindow;
+    }
+
+    return qobject_cast<QWindow *>(obj);
 }
 
 #include "moc_NhekoGlobalObject.cpp"

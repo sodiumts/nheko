@@ -346,7 +346,8 @@ sudo pacman -S qt6-base \
     lmdb \
     lmdbxx \
     cmark \
-    qtkeychain-qt6
+    qtkeychain-qt6 \
+    nlohmann-json
 ```
 
 #### Debian 13 [Testing/Sid] (Nheko QT6 Version)

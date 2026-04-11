@@ -6,13 +6,13 @@
     <message>
         <location filename="../qml/voip/ActiveCallBar.qml" line="+103"/>
         <source>Calling...</source>
-        <translation>Sto chiamando…</translation>
+        <translation>Chiamata in corso…</translation>
     </message>
     <message>
         <location line="+9"/>
         <location line="+9"/>
         <source>Connecting...</source>
-        <translation>Connessione in corso...</translation>
+        <translation>Connessione in corso…</translation>
     </message>
     <message>
         <location line="+73"/>
@@ -48,7 +48,7 @@
     <message>
         <location line="+84"/>
         <source>Failed to update aliases: %1</source>
-        <translation type="unfinished"></translation>
+        <translation>Impossibile aggiornare gli alias: %1</translation>
     </message>
 </context>
 <context>
@@ -56,37 +56,37 @@
     <message>
         <location filename="../qml/dialogs/AliasEditor.qml" line="+25"/>
         <source>Aliases to %1</source>
-        <translation type="unfinished"></translation>
+        <translation>Alias verso %1</translation>
     </message>
     <message>
         <location line="+14"/>
         <source>List of aliases to this room. Usually you can only add aliases on your server. You can have one canonical alias and many alternate aliases.</source>
-        <translation type="unfinished"></translation>
+        <translation>Lista di alias verso questa stanza. Di solito puoi aggiungere solo alias sul tuo server. Puoi avere un singolo alias canonico e molti alias alternativi.</translation>
     </message>
     <message>
         <location line="+41"/>
         <source>Primary alias</source>
-        <translation type="unfinished"></translation>
+        <translation>Alias principale</translation>
     </message>
     <message>
         <location line="+0"/>
         <source>Make primary alias</source>
-        <translation type="unfinished"></translation>
+        <translation>Crea alias principale</translation>
     </message>
     <message>
         <location line="+14"/>
         <source>Advertise as an alias in this room</source>
-        <translation type="unfinished"></translation>
+        <translation>Annuncia come alias in questa stanza</translation>
     </message>
     <message>
         <location line="+13"/>
         <source>Publish in room directory</source>
-        <translation type="unfinished"></translation>
+        <translation>Pubblica nella directory delle stanze</translation>
     </message>
     <message>
         <location line="+12"/>
         <source>Remove this alias</source>
-        <translation type="unfinished"></translation>
+        <translation>Rimuovi questo alias</translation>
     </message>
     <message>
         <location line="+19"/>
@@ -96,7 +96,7 @@
     <message>
         <location line="+12"/>
         <source>Add</source>
-        <translation type="unfinished"></translation>
+        <translation>Aggiungi</translation>
     </message>
 </context>
 <context>
@@ -254,7 +254,7 @@
     <message>
         <location line="+84"/>
         <source>Confirm logout</source>
-        <translation type="unfinished"></translation>
+        <translation>Conferma il logout</translation>
     </message>
     <message>
         <location line="+1"/>

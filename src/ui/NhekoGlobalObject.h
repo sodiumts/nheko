@@ -31,6 +31,7 @@ class Nheko : public QObject
     Q_PROPERTY(int paddingMedium READ paddingMedium CONSTANT)
     Q_PROPERTY(int paddingLarge READ paddingLarge CONSTANT)
     Q_PROPERTY(int tooltipDelay READ tooltipDelay CONSTANT)
+    Q_PROPERTY(QWindow *focusWindow READ focusWindow NOTIFY focusWindowChanged)
 
     Q_PROPERTY(UserProfile *currentUser READ currentUser NOTIFY profileChanged)
 
@@ -48,6 +49,7 @@ public:
     int paddingLarge() const { return 20; }
 
     int tooltipDelay() const;
+    QWindow *focusWindow() const;
 
     UserProfile *currentUser() const;
 
@@ -76,6 +78,7 @@ public:
     }
     Q_INVOKABLE void setTransientParent(QWindow *window, QWindow *parentWindow) const;
     Q_INVOKABLE void setWindowRole(QWindow *win, QString newRole) const;
+    Q_INVOKABLE QWindow *findWindow(QObject *obj) const;
 
 public slots:
     void updateUserProfile();
@@ -83,6 +86,7 @@ public slots:
 signals:
     void colorsChanged();
     void profileChanged();
+    void focusWindowChanged(QWindow *);
 
     void openLogoutDialog();
     void openJoinRoomDialog();

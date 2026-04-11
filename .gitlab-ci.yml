@@ -344,7 +344,7 @@ build-flatpak:
         AARCH: aarch64
         JOBS: 12
   before_script:
-    - apt-get update && apt-get -y install flatpak-builder git python3 curl python3-aiohttp python3-tenacity gir1.2-ostree-1.0
+    - apt-get update && apt-get -y install flatpak-builder git python3 curl python3-aiohttp python3-tenacity gir1.2-ostree-1.0 python3-gi
     - flatpak remote-add --user --if-not-exists flathub https://flathub.org/repo/flathub.flatpakrepo
       # see https://github.com/flatpak/flatpak-builder/issues/495
     - git config --global protocol.file.allow always
