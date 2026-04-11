@@ -50,6 +50,7 @@ signals:
     void participantConnected(const QString &identity);
     void participantDisconnected(const QString &identity);
     void error(const QString &message);
+    void publisherPipelineReady();
 
 private slots:
     void onWebSocketConnected();
@@ -75,7 +76,8 @@ private:
                           livekit::SignalTarget target);
     void sendAddTrack(const std::string &cid,
                       const std::string &name,
-                      livekit::TrackType type);
+                      livekit::TrackType type,
+                      livekit::Encryption_Type encryption = livekit::Encryption_Type_GCM);
     void sendMuteTrack(const std::string &sid, bool muted);
     void sendPing();
 
@@ -100,6 +102,9 @@ private:
     bool micMuted_ = false;
     QTimer pingTimer_;
     int pingInterval_ = 10000;
+
+    bool publisherSignalsConnected_ = false;
+    bool wantToPublish_ = false;
 
     GStreamerSFUSession *sfuSession_ = nullptr;
     std::map<uint8_t, std::vector<uint8_t>> pendingDecryptionKeys_;

@@ -37,6 +37,8 @@ private:
     CallDevices();
 
     friend class WebRTCSession;
+    friend class GStreamerSFUSession;
+
     void init();
     GstDevice *audioDevice() const;
     GstDevice *videoDevice(std::pair<int, int> &resolution, std::pair<int, int> &frameRate) const;

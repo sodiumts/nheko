@@ -795,15 +795,6 @@ TimelineModel::data(const mtx::events::collections::TimelineEvents &event, int r
                           return tr("%1 left the call").arg(displayName(QString::fromStdString(e.sender)));
                       }
 
-                      bool isUpdate = false;
-                      if (!e.unsigned_data.replaces_state.empty()) {
-                          // Use the flattened created_ts field
-                          if (e.content.created_ts > 0) {
-                              isUpdate = true;
-                          }
-                      }
-                      if (isUpdate)
-                          return tr("%1 updated their call status.").arg(displayName(QString::fromStdString(e.sender)));
                       return tr("%1 joined the call.").arg(displayName(QString::fromStdString(e.sender)));
                   }
 
@@ -1441,6 +1432,10 @@ void TimelineModel::updateCallParticipants(const mtx::events::StateEvent<mtx::ev
             if (!activeCallParticipants_.contains(userId)) {
                 activeCallParticipants_.insert(userId);
                 changed = true;
+
+                //ChatPage::instance()->matrixRTC()->onCallMemberEvent(event.sender,
+                //                                                     content.device_id);
+
                 nhlog::ui()->info("Added user {} to active participants", userId.toStdString());
             } else {
                 nhlog::ui()->info("User {} already in active participants", userId.toStdString());
@@ -2369,7 +2364,12 @@ TimelineModel::copyLinkToEvent(const QString &eventId) const
 void
 TimelineModel::joinCall()
 {
-    ChatPage::instance()->matrixRTC()->join(room_id_.toStdString(), http::client()->user_id().to_string(), http::client()->device_id());
+    const auto matrixRTC = ChatPage::instance()->matrixRTC();
+    if (matrixRTC->isActive()) {
+        matrixRTC->getCurrentTimeline()->leaveCall();
+    }
+
+    matrixRTC->join(room_id_.toStdString(), http::client()->user_id().to_string(), http::client()->device_id(), this);
     isInCall_ = true;
     emit isInCallChanged();
 }
@@ -2380,6 +2380,27 @@ TimelineModel::leaveCall()
     ChatPage::instance()->matrixRTC()->leave();
     isInCall_ = false;
     emit isInCallChanged();
+}
+void
+TimelineModel::shareScreen()
+{
+    ChatPage::instance()->matrixRTC()->shareScreen();
+}
+
+void
+TimelineModel::mute()
+{
+    ChatPage::instance()->matrixRTC()->livekitSession()->toggleMicMute();
+    isMuted_ = true;
+    emit isMutedChanged();
+}
+
+void
+TimelineModel::unmute()
+{
+    ChatPage::instance()->matrixRTC()->livekitSession()->toggleMicMute();
+    isMuted_ = false;
+    emit isMutedChanged();
 }
 
 void

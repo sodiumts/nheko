@@ -43,7 +43,7 @@ LiveKitSession::connect(const QString &url, const QString &jwt)
     wsUrl.replace(QStringLiteral("https://"), QStringLiteral("wss://"));
     wsUrl.replace(QStringLiteral("http://"), QStringLiteral("ws://"));
     wsUrl += QStringLiteral("/rtc?access_token=") + jwt +
-             QStringLiteral("&protocol=9&auto_subscribe=1");
+             QStringLiteral("&protocol=16&auto_subscribe=1");
 
     nhlog::net()->info("LiveKit: connecting to {}", wsUrl.toStdString());
 
@@ -273,6 +273,12 @@ LiveKitSession::handleOffer(const livekit::SessionDescription &offer)
 
         if (!sfuSession_->initSubscriber(offer.sdp()))
             emit error(QStringLiteral("Failed to initialize subscriber pipeline"));
+
+        if (wantToPublish_) {
+            wantToPublish_ = false;
+            QMetaObject::invokeMethod(
+              this, &LiveKitSession::publishMicrophone, Qt::QueuedConnection);
+        }
     } else {
         nhlog::net()->info("LiveKit: renegotiation offer received");
         if (!sfuSession_->acceptRenegotiationOffer(offer.sdp()))
@@ -283,9 +289,12 @@ LiveKitSession::handleOffer(const livekit::SessionDescription &offer)
 void
 LiveKitSession::handleAnswer([[maybe_unused]] const livekit::SessionDescription &answer)
 {
-    // TODO: Actually implement this
-    nhlog::net()->info("LiveKit: received publisher answer (not handled yet)");
-}
+    nhlog::net()->info("LiveKit: received publisher answer");
+    if (!sfuSession_) {
+        nhlog::net()->warn("LiveKit: got publisher answer but sfuSession_ not ready");
+        return;
+    }
+    sfuSession_->acceptPublisherAnswer(answer.sdp());}
 void
 LiveKitSession::setTurnServers(const std::vector<std::string> &uris,
                                      const std::string &username,
@@ -298,26 +307,26 @@ LiveKitSession::setTurnServers(const std::vector<std::string> &uris,
 void
 LiveKitSession::handleTrickle(const livekit::TrickleRequest &trickle)
 {
-    nhlog::net()->info("LiveKit: trickle received target={} candidate={}",
-                       static_cast<int>(trickle.target()),
-                       trickle.candidateinit().substr(0, 50));
+    nhlog::net()->info("LiveKit: trickle target={} candidate={}",
+                           static_cast<int>(trickle.target()),
+                           trickle.candidateinit().substr(0, 50));
 
-    if (trickle.target() != livekit::SignalTarget::SUBSCRIBER)
-        return;
+    auto candidateJson = QJsonDocument::fromJson(
+        QByteArray::fromStdString(trickle.candidateinit())).object();
+    const std::string candidate = candidateJson["candidate"].toString().toStdString();
+    const std::string sdpMid    = candidateJson["sdpMid"].toString().toStdString();
+    const int         mlineIdx  = candidateJson["sdpMLineIndex"].toInt();
 
     if (!sfuSession_) {
         nhlog::net()->warn("LiveKit: got trickle but sfuSession_ not ready");
         return;
     }
 
-    auto candidateJson = QJsonDocument::fromJson(
-        QByteArray::fromStdString(trickle.candidateinit())).object();
-
-    sfuSession_->addSubscriberICECandidate(
-        candidateJson[QStringLiteral("candidate")].toString().toStdString(),
-        candidateJson[QStringLiteral("sdpMid")].toString().toStdString(),
-        candidateJson[QStringLiteral("sdpMLineIndex")].toInt());
-}
+    if (trickle.target() == livekit::SignalTarget::SUBSCRIBER) {
+        sfuSession_->addSubscriberICECandidate(candidate, sdpMid, mlineIdx);
+    } else if (trickle.target() == livekit::SignalTarget::PUBLISHER) {
+        sfuSession_->addPublisherICECandidate(candidate, sdpMid, mlineIdx);
+    }}
 
 void
 LiveKitSession::handleParticipantUpdate(const livekit::ParticipantUpdate &update)
@@ -356,8 +365,46 @@ LiveKitSession::handleLeave(const livekit::LeaveRequest &leave)
 void
 LiveKitSession::publishMicrophone()
 {
-    // TODO: implement microphone publishing
-    nhlog::net()->info("LiveKit: publishMicrophone() not yet implemented");
+    if (!sfuSession_) {
+        // Subscriber offer hasn't arrived yet — set flag, retry after sfuSession_ is created
+        nhlog::net()->info("LiveKit: publishMicrophone deferred (sfuSession not ready yet)");
+        wantToPublish_ = true;
+        return;
+    }
+
+    if (micTrackCid_.empty())
+        micTrackCid_ = QUuid::createUuid().toString(QUuid::WithoutBraces).toStdString();
+
+    // Connect publisher signals once
+    if (!publisherSignalsConnected_) {
+        QObject::connect(sfuSession_, &GStreamerSFUSession::publisherOfferCreated,
+            this, [this](const std::string &sdp) {
+                livekit::SignalRequest req;
+                auto *offer = req.mutable_offer();
+                offer->set_type("offer");
+                offer->set_sdp(sdp);
+                sendSignalRequest(req);
+                nhlog::net()->info("LiveKit: sent publisher offer to server");
+            });
+        QObject::connect(sfuSession_, &GStreamerSFUSession::publisherICECandidate,
+            this, [this](const std::string &candidate,
+                         const std::string &sdpMid,
+                         int sdpMLineIndex) {
+                sendICECandidate(candidate, sdpMid, sdpMLineIndex,
+                                 livekit::SignalTarget::PUBLISHER);
+            });
+        QObject::connect(sfuSession_, &GStreamerSFUSession::publisherPipelineReady,
+                     this, &LiveKitSession::publisherPipelineReady);
+        publisherSignalsConnected_ = true;
+    }
+
+    sfuSession_->setTrackCid(micTrackCid_);
+
+    // Advertise the track to LiveKit before sending the offer
+    sendAddTrack(micTrackCid_, "microphone", livekit::TrackType::AUDIO, livekit::Encryption_Type_GCM);
+
+    if (!sfuSession_->initPublisher())
+        emit error(QStringLiteral("Failed to initialize publisher pipeline"));
 }
 
 void
@@ -403,7 +450,8 @@ LiveKitSession::sendICECandidate(const std::string &candidate,
 void
 LiveKitSession::sendAddTrack(const std::string &cid,
                                    const std::string &name,
-                                   livekit::TrackType type)
+                                   livekit::TrackType type,
+                                   livekit::Encryption_Type encryption)
 {
     livekit::SignalRequest request;
     auto *addTrack = request.mutable_add_track();
@@ -413,6 +461,18 @@ LiveKitSession::sendAddTrack(const std::string &cid,
     addTrack->set_source(type == livekit::TrackType::AUDIO
                              ? livekit::TrackSource::MICROPHONE
                              : livekit::TrackSource::CAMERA);
+    addTrack->set_encryption(encryption);
+    // auto layer = addTrack->layers();
+    //
+    // livekit::VideoLayer lay;
+    // lay.set_width(1920);
+    // lay.set_height(1080);
+    // lay.set_bitrate(6000000);
+    // lay.set_quality(livekit::VideoQuality::HIGH);
+    //
+    //
+    // layer.Add();
+
     sendSignalRequest(request);
 }
 

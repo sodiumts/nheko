@@ -13,6 +13,7 @@
 
 #include <mtx/responses/common.hpp>
 #include <mtxclient/http/errors.hpp>
+#include <qtmetamacros.h>
 
 #include "CacheCryptoStructs.h"
 #include "CacheStructs.h"
@@ -229,6 +230,7 @@ class TimelineModel final : public QAbstractListModel
     Q_PROPERTY(int callParticipantsCount READ callParticipantsCount NOTIFY callParticipantsCountChanged)
     Q_PROPERTY(QStringList callParticipants READ callParticipants NOTIFY callParticipantsCountChanged)
     Q_PROPERTY(bool isInCall READ isInCall NOTIFY isInCallChanged)
+    Q_PROPERTY(bool isMuted READ isMuted NOTIFY isMutedChanged)
 
 public:
     explicit TimelineModel(TimelineViewManager *manager,
@@ -356,6 +358,11 @@ public:
     Q_INVOKABLE void joinCall();
     Q_INVOKABLE void leaveCall();
 
+    Q_INVOKABLE void shareScreen();
+
+    Q_INVOKABLE void mute();
+    Q_INVOKABLE void unmute();
+
     void
     cacheMedia(const QString &eventId, const std::function<void(const QString filename)> &callback);
     Q_INVOKABLE void sendReset()
@@ -400,6 +407,7 @@ public:
     }
 
     bool isInCall() const { return isInCall_; }
+    bool isMuted() const { return isMuted_; }
 
     mtx::pushrules::PushRuleEvaluator::RoomContext pushrulesRoomContext() const;
 
@@ -531,6 +539,8 @@ signals:
     void callParticipantsCountChanged();
     void isInCallChanged();
 
+    void isMutedChanged();
+
     void scrollTargetChanged();
 
     void fetchedMore();
@@ -546,7 +556,7 @@ private:
     QSet<QString> activeCallParticipants_;
     int callParticipantsCount_ = 0;
     bool isInCall_ = false;
-    MatrixRTCSession* RTCSession_ = nullptr;
+    bool isMuted_ = false;
 
     void setPaginationInProgress(const bool paginationInProgress);
 

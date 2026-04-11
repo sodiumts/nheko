@@ -3,6 +3,8 @@
 #include <glib.h>
 #ifdef GSTREAMER_AVAILABLE
 
+#include "CallDevices.h"
+
 #include <QObject>
 #include <map>
 #include <shared_mutex>
@@ -27,23 +29,40 @@ public:
     void addSubscriberICECandidate(const std::string& candidate,
         const std::string& sdpMid,
         int sdpMLineIndex);
+    bool acceptRenegotiationOffer(const std::string& sdp);
+
+    bool initPublisher();
+    void endPublisher();
+    void acceptPublisherAnswer(const std::string &sdp);
+    void addPublisherICECandidate(const std::string& candidate,
+        const std::string& sdpMid,
+        int sdpMLineIndex);
 
     void setTurnServers(const std::vector<std::string>& uris) { turnServers_ = uris; }
     void end();
     bool toggleMicMute();
-    bool acceptRenegotiationOffer(const std::string& sdp);
 
     void setDecryptionKey(uint8_t kid, const std::vector<uint8_t>& rawKey);
 
-    mutable std::shared_mutex keyMutex_;
-    std::map<uint8_t, std::vector<uint8_t>> decryptionKeys_;
+    void setTrackCid(const std::string &cid) { trackCid_ = cid; }
+
+    std::vector<uint8_t> generateEncryptionKeyMaterial(uint8_t kid = 0);
+
+
 signals:
     void subscriberAnswerCreated(const std::string& sdp);
     void subscriberICECandidate(const std::string& candidate,
         const std::string& sdpMid,
         int sdpMLineIndex);
+
+    void publisherOfferCreated(const std::string &sdp);
+    void publisherICECandidate(const std::string& candidate,
+        const std::string& sdpMid,
+        int sdpMLineIndex);
+
     void stateChanged(const QString& state);
     void failed(const QString& reason);
+    void publisherPipelineReady();
 
 private:
     static void onICECandidate(GstElement* webrtc,
@@ -66,25 +85,58 @@ private:
     static void onAnswerCreated(GstPromise* promise, gpointer user_data);
     static void onConnectionState(GstElement* webrtc, GParamSpec*, gpointer user_data);
 
+    static void onPubICECandidate(GstElement *, guint, gchar *, gpointer);
+    static void onPubICEConnectionState(GstElement *, GParamSpec *, gpointer);
+    static gboolean onPubBusMessage(GstBus *, GstMessage *, gpointer);
+    static void onPublisherOfferCreated(GstPromise *, gpointer);
+    static void onPubConnectionState(GstElement *webrtc, GParamSpec *, gpointer user_data);
+
     std::vector<uint8_t> getDecryptionKey(uint8_t kid) const;
+    std::vector<uint8_t> getEncryptionKey(uint8_t &outKid) const;
+
     static std::vector<uint8_t> deriveMediaKey(const std::vector<uint8_t>& rawKey);
     static GstPadProbeReturn sframeDecryptProbe(GstPad* pad, GstPadProbeInfo* info, gpointer user_data);
+    static GstPadProbeReturn sframeEncryptProbe(GstPad *, GstPadProbeInfo *, gpointer);
 
     void createAnswer();
-    GstElement* createAudioSinkChain();
     void configureTurnServers() const;
+    void configurePubTurnServers();
 
     GstElement* pipe_ = nullptr;
     GstElement* webrtc_ = nullptr;
-    guint busWatchId_ = 0;
-
     GstElement* audioMixer_ { nullptr };
     GstElement* audioMixerConvert_ { nullptr };
     GstElement* audioMixerResample_ { nullptr };
     GstElement* audioSink_ { nullptr };
+    guint busWatchId_ = 0;
+
+    std::vector<std::pair<std::string, int>> pendingCandidates_;
+
+    GstElement *pubPipe_ = nullptr;
+    GstElement *pubWebrtc_ = nullptr;
+    //GstElement *pubValve_ = nullptr;
+    guint pubBusWatchId_ = 0;
+    bool micMuted_ = false;
+    bool iceConnected_ = false;
+
+    std::vector<std::pair<std::string, int>> pendingPubCandidates_;
 
     std::vector<std::string> turnServers_;
-    std::vector<std::pair<std::string, int>> pendingCandidates_;
+
+    mutable std::shared_mutex keyMutex_;
+    std::map<uint8_t, std::vector<uint8_t>> decryptionKeys_;
+
+    std::string trackCid_;
+    guint publisherSsrc_;
+
+    mutable std::shared_mutex encKeyMutex_;
+    std::map<uint8_t, std::vector<uint8_t>> encryptionKeys_;
+    uint8_t currentEncKid_ = 0;
+    std::atomic<uint64_t> encFrameCounter_{0};
+
+
+
+    CallDevices &devices_;
 };
 
 #endif // GSTREAMER_AVAILABLE

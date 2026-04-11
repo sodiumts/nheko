@@ -346,25 +346,27 @@ handle_olm_message(const OlmMessage &msg, const UserKeyCache &otherUserDeviceKey
             } else if (auto callKeys = std::get_if<mtx::events::DeviceEvent<mtx::events::msg::CallEncryptionKeys>>(&device_event)) {
                 const auto &content = callKeys->content;
                 nhlog::crypto()->info("CallEncryptionKeys from {} KID={} device={}",
-                                      callKeys->sender,
-                                      content.keys.index,
-                                      content.member.claimed_device_id);
+                    callKeys->sender, content.keys.index, content.member.claimed_device_id);
 
                 auto raw = QByteArray::fromBase64(QByteArray::fromStdString(content.keys.key));
                 if (raw.size() != 16) {
-                    nhlog::crypto()->error("RTC: unexpected key length {}", raw.size());
+                    nhlog::crypto()->error("RTC: unexpected key length {}, dropping", raw.size());
                     return;
                 }
 
-                uint8_t kid = static_cast<uint8_t>(content.keys.index);
+                const uint8_t kid = static_cast<uint8_t>(content.keys.index);
                 std::vector<uint8_t> keyVec(raw.begin(), raw.end());
 
                 auto *rtc = ChatPage::instance()->matrixRTC();
                 if (auto *lk = rtc->livekitSession()) {
                     lk->setDecryptionKey(kid, keyVec);
-                } else {
-                    rtc->storePendingDecryptionKey(kid, keyVec);
+                    rtc->addUsedKID(kid);
                 }
+                else {
+                    rtc->storePendingDecryptionKey(kid, keyVec);
+                    rtc->addUsedKID(kid);
+                }
+                nhlog::crypto()->info("RTC: registered KID={} from={}", kid, callKeys->sender);
             } else if (auto forwardedRoomKey =
                          std::get_if<DeviceEvent<msg::ForwardedRoomKey>>(&device_event)) {
                 forwardedRoomKey->content.forwarding_curve25519_key_chain.push_back(msg.sender_key);

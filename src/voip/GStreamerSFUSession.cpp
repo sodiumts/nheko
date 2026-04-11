@@ -7,6 +7,7 @@
 
 #include <openssl/evp.h>
 #include <openssl/kdf.h>
+#include <openssl/rand.h>
 
 #include <gst/rtp/gstrtpbuffer.h>
 
@@ -17,7 +18,7 @@ static constexpr auto STUN_SERVER = "stun://turn.matrix.org:3478";
 static constexpr auto LIVEKIT_HKDF_SALT = "LKFrameEncryptionKey";
 
 GStreamerSFUSession::GStreamerSFUSession(QObject *parent)
-  : QObject(parent)
+  : QObject(parent),  devices_(CallDevices::instance())
 {
 }
 
@@ -29,6 +30,8 @@ GStreamerSFUSession::~GStreamerSFUSession()
 void
 GStreamerSFUSession::end()
 {
+    endPublisher();
+
     audioSink_  = nullptr;
     if (pipe_) {
         gst_element_set_state(pipe_, GST_STATE_NULL);
@@ -46,7 +49,9 @@ GStreamerSFUSession::end()
 bool
 GStreamerSFUSession::toggleMicMute()
 {
-    return false;
+    micMuted_ = !micMuted_;
+    nhlog::ui()->info("SFU: mic {}", micMuted_ ? "muted" : "unmuted");
+    return micMuted_;
 }
 
 void
@@ -62,13 +67,108 @@ GStreamerSFUSession::setDecryptionKey(uint8_t kid, const std::vector<uint8_t> &r
     decryptionKeys_[kid] = std::move(derived);
     nhlog::ui()->info("SFU: stored derived decryption key for KID {}", kid);
 }
+std::vector<uint8_t>
+GStreamerSFUSession::generateEncryptionKeyMaterial(uint8_t kid)
+{
+    std::vector<uint8_t> raw(16);
+    if (RAND_bytes(raw.data(), 16) != 1) {
+        nhlog::ui()->error("SFU: RAND_bytes failed — cannot generate encryption key");
+        return {};
+    }
 
+    std::vector<uint8_t> derived = deriveMediaKey(raw);
+    if (derived.empty()) {
+        nhlog::ui()->error("SFU: HKDF derivation failed for outbound KID {}", kid);
+        return {};
+    }
+
+    {
+        std::unique_lock lock(encKeyMutex_);
+        encryptionKeys_[kid] = std::move(derived);
+        currentEncKid_       = kid;
+    }
+
+    nhlog::ui()->info("SFU: generated outbound encryption key for KID {}", kid);
+    return raw;
+}
+
+std::string patchSdpWithSsrcAndMsid(const std::string &sdp,
+                                           const std::string &trackCid,
+                                           uint32_t ssrc)
+{
+    std::string patched = sdp;
+    size_t audioPos = patched.find("\nm=audio");
+    if (audioPos == std::string::npos)
+        return patched;
+    size_t nextMedia = patched.find("\nm=", audioPos + 1);
+    size_t audioEnd = (nextMedia == std::string::npos) ? patched.size() : nextMedia;
+
+    std::stringstream insert;
+    insert << "a=ssrc:" << ssrc << " cname:{" << trackCid << "}\r\n";
+    insert << "a=ssrc:" << ssrc << " msid:" << trackCid << " " << trackCid << "\r\n";
+    insert << "a=msid:" << trackCid << "\r\n";
+
+    patched.insert(audioEnd, insert.str());
+    return patched;
+}
+
+void
+GStreamerSFUSession::onPublisherOfferCreated(GstPromise *promise, gpointer user_data)
+{
+    auto *self = static_cast<GStreamerSFUSession *>(user_data);
+
+    const GstStructure *reply = gst_promise_get_reply(promise);
+    GstWebRTCSessionDescription *offer = nullptr;
+    gst_structure_get(reply, "offer",
+                      GST_TYPE_WEBRTC_SESSION_DESCRIPTION, &offer, nullptr);
+    gst_promise_unref(promise);
+
+    if (!offer) {
+        nhlog::ui()->error("SFU: publisher offer creation failed");
+        QMetaObject::invokeMethod(self, [self]() {
+            emit self->failed(QStringLiteral("Failed to create publisher WebRTC offer"));
+        }, Qt::QueuedConnection);
+        return;
+    }
+
+    gchar *sdpStr = gst_sdp_message_as_text(offer->sdp);
+    std::string sdp(sdpStr);
+    g_free(sdpStr);
+
+    GstPromise *localPromise = gst_promise_new();
+    g_signal_emit_by_name(self->pubWebrtc_, "set-local-description", offer, localPromise);
+    gst_promise_unref(localPromise);
+    gst_webrtc_session_description_free(offer);
+
+
+    nhlog::ui()->info("SFU: publisher offer SDP ({} bytes)", sdp.size());
+
+    std::string patchedSdp = patchSdpWithSsrcAndMsid(sdp, self->trackCid_, self->publisherSsrc_);
+
+    nhlog::ui()->info("SFU: publisher offer SDP:\n{}", patchedSdp);
+
+    QMetaObject::invokeMethod(self, [self, patchedSdp]() {
+        emit self->publisherPipelineReady();
+        emit self->publisherOfferCreated(patchedSdp);
+    }, Qt::QueuedConnection);
+}
 std::vector<uint8_t>
 GStreamerSFUSession::getDecryptionKey(const uint8_t kid) const
 {
     std::shared_lock lock(keyMutex_);
     const auto it = decryptionKeys_.find(kid);
     if (it == decryptionKeys_.end())
+        return {};
+    return it->second;
+}
+
+std::vector<uint8_t>
+GStreamerSFUSession::getEncryptionKey(uint8_t &outKid) const
+{
+    std::shared_lock lock(encKeyMutex_);
+    outKid    = currentEncKid_;
+    auto it   = encryptionKeys_.find(currentEncKid_);
+    if (it == encryptionKeys_.end())
         return {};
     return it->second;
 }
@@ -193,6 +293,105 @@ GStreamerSFUSession::sframeDecryptProbe([[maybe_unused]] GstPad *pad,
     return GST_PAD_PROBE_OK;
 }
 
+GstPadProbeReturn
+GStreamerSFUSession::sframeEncryptProbe(GstPad * /*pad*/,
+                                        GstPadProbeInfo *info,
+                                        gpointer user_data)
+{
+    auto *self = static_cast<GStreamerSFUSession *>(user_data);
+
+
+    if (!self->iceConnected_ || self->micMuted_)
+        return GST_PAD_PROBE_OK;
+
+    GstBuffer *inBuf = GST_PAD_PROBE_INFO_BUFFER(info);
+
+    GstRTPBuffer rtp = GST_RTP_BUFFER_INIT;
+    if (!gst_rtp_buffer_map(inBuf, GST_MAP_READ, &rtp))
+        return GST_PAD_PROBE_OK;
+
+    const guint  payloadLen = gst_rtp_buffer_get_payload_len(&rtp);
+    const guint  headerLen  = gst_rtp_buffer_get_header_len(&rtp);
+    const auto  *payloadPtr = static_cast<const guint8 *>(
+                                  gst_rtp_buffer_get_payload(&rtp));
+
+    if (payloadLen < 2) {
+        gst_rtp_buffer_unmap(&rtp);
+        return GST_PAD_PROBE_OK;
+    }
+
+    std::vector<uint8_t> origPayload(payloadPtr, payloadPtr + payloadLen);
+    gst_rtp_buffer_unmap(&rtp);
+
+    GstMapInfo rawMap;
+    gst_buffer_map(inBuf, &rawMap, GST_MAP_READ);
+    std::vector<uint8_t> rawHeader(rawMap.data, rawMap.data + headerLen);
+    gst_buffer_unmap(inBuf, &rawMap);
+
+    uint8_t kid = 0;
+    std::vector<uint8_t> key = self->getEncryptionKey(kid);
+    if (key.empty()) {
+        nhlog::ui()->warn("SFU: encrypt probe: no outbound key yet, passing unencrypted");
+        return GST_PAD_PROBE_OK;
+    }
+
+    uint8_t iv[12] = {};
+    const uint64_t counter = self->encFrameCounter_.fetch_add(1, std::memory_order_relaxed);
+    for (int i = 0; i < 8; ++i)
+        iv[4 + (7 - i)] = static_cast<uint8_t>((counter >> (8 * i)) & 0xFF);
+
+    static constexpr size_t kUnencrypted = 1;
+    const uint8_t *plain   = origPayload.data() + kUnencrypted;
+    const size_t   plainLen = origPayload.size() - kUnencrypted;
+
+    std::vector<uint8_t> ciphertext(plainLen);
+    uint8_t tag[16];
+    int encLen = 0, finalLen = 0;
+
+    EVP_CIPHER_CTX *ctx = EVP_CIPHER_CTX_new();
+    EVP_EncryptInit_ex(ctx, EVP_aes_128_gcm(), nullptr, nullptr, nullptr);
+    EVP_CIPHER_CTX_ctrl(ctx, EVP_CTRL_GCM_SET_IVLEN, 12, nullptr);
+    EVP_EncryptInit_ex(ctx, nullptr, nullptr, key.data(), iv);
+    // Feed Opus TOC as additional authenticated data
+    EVP_EncryptUpdate(ctx, nullptr, &encLen,
+                      origPayload.data(), static_cast<int>(kUnencrypted));
+    EVP_EncryptUpdate(ctx, ciphertext.data(), &encLen,
+                      plain, static_cast<int>(plainLen));
+    EVP_EncryptFinal_ex(ctx, ciphertext.data() + encLen, &finalLen);
+    EVP_CIPHER_CTX_ctrl(ctx, EVP_CTRL_GCM_GET_TAG, 16, tag);
+    EVP_CIPHER_CTX_free(ctx);
+
+    const size_t ciphertextLen = static_cast<size_t>(encLen + finalLen);
+
+    const size_t newPayloadLen = kUnencrypted + ciphertextLen + 16 + 12 + 2;
+
+    GstBuffer *newBuf = gst_buffer_new_allocate(nullptr, headerLen + newPayloadLen, nullptr);
+    gst_buffer_copy_into(newBuf, inBuf,
+                         static_cast<GstBufferCopyFlags>(
+                             GST_BUFFER_COPY_METADATA | GST_BUFFER_COPY_TIMESTAMPS),
+                         0, 0);
+
+    GstMapInfo writeMap;
+    gst_buffer_map(newBuf, &writeMap, GST_MAP_WRITE);
+    uint8_t *out = writeMap.data;
+
+    memcpy(out, rawHeader.data(), headerLen);   out += headerLen;
+    out[0] = origPayload[0];                    out += kUnencrypted;
+    memcpy(out, ciphertext.data(), ciphertextLen); out += ciphertextLen;
+    memcpy(out, tag, 16);                        out += 16;
+    memcpy(out, iv, 12);                         out += 12;
+    *out++ = 12;
+    *out   = kid;
+
+    gst_buffer_unmap(newBuf, &writeMap);
+
+    gst_buffer_unref(GST_PAD_PROBE_INFO_BUFFER(info));
+    GST_PAD_PROBE_INFO_DATA(info) = newBuf;
+
+
+    return GST_PAD_PROBE_OK;
+}
+
 bool
 GStreamerSFUSession::initSubscriber(const std::string &sdp)
 {
@@ -227,10 +426,6 @@ GStreamerSFUSession::initSubscriber(const std::string &sdp)
         return false;
     }
 
-    GstClock *clock = gst_system_clock_obtain();
-    gst_pipeline_use_clock(GST_PIPELINE(pipe_), clock);
-    gst_object_unref(clock);
-
     webrtc_ = gst_element_factory_make("webrtcbin", "webrtcbin");
     if (!webrtc_) {
         nhlog::ui()->error("SFU: failed to create webrtcbin");
@@ -250,10 +445,17 @@ GStreamerSFUSession::initSubscriber(const std::string &sdp)
 
     gst_bin_add(GST_BIN(pipe_), webrtc_);
 
+    g_object_set(webrtc_, "latency", 40, nullptr);
+
+    guint actualLatency = 0;
+    g_object_get(webrtc_, "latency", &actualLatency, nullptr);
+    nhlog::ui()->info("SFU: webrtcbin jitter buffer latency = {}ms", actualLatency);
+
     audioMixer_         = gst_element_factory_make("audiomixer",    "audio_mixer");
     audioMixerConvert_  = gst_element_factory_make("audioconvert",  "audio_mixer_convert");
     audioMixerResample_ = gst_element_factory_make("audioresample", "audio_mixer_resample");
     audioSink_          = gst_element_factory_make("autoaudiosink", "audio_sink");
+
 
     if (!audioMixer_ || !audioMixerConvert_ || !audioMixerResample_ || !audioSink_) {
         nhlog::ui()->error("SFU: failed to create output audio chain");
@@ -357,6 +559,50 @@ GStreamerSFUSession::onConnectionState(GstElement *webrtc, GParamSpec *, const g
 
     if (state == GST_WEBRTC_PEER_CONNECTION_STATE_FAILED)
         emit self->failed(QStringLiteral("Peer connection failed"));
+}
+void
+GStreamerSFUSession::onPubICECandidate(GstElement *, guint mlineindex, gchar *candidate, gpointer user_data)
+{
+    auto *self = static_cast<GStreamerSFUSession *>(user_data);
+    nhlog::ui()->debug("SFU: publisher local ICE: {}", candidate);
+    emit self->publisherICECandidate(std::string(candidate),
+                                     std::to_string(mlineindex),
+                                     static_cast<int>(mlineindex));
+}
+void
+GStreamerSFUSession::onPubICEConnectionState(GstElement *webrtc, GParamSpec *, gpointer user_data)
+{
+    auto *self = static_cast<GStreamerSFUSession *>(user_data);
+    GstWebRTCICEConnectionState state;
+    g_object_get(webrtc, "ice-connection-state", &state, nullptr);
+
+    switch (state) {
+    case GST_WEBRTC_ICE_CONNECTION_STATE_CONNECTED:
+        nhlog::ui()->info("SFU: publisher ICE connected (waiting for DTLS)");
+        break;
+    case GST_WEBRTC_ICE_CONNECTION_STATE_FAILED:
+        nhlog::ui()->error("SFU: publisher ICE failed");
+        emit self->failed(QStringLiteral("Publisher ICE connection failed"));
+        break;
+    default:
+        break;
+    }
+}
+gboolean
+GStreamerSFUSession::onPubBusMessage(GstBus *, GstMessage *message, gpointer user_data)
+{
+    auto *self = static_cast<GStreamerSFUSession *>(user_data);
+    if (GST_MESSAGE_TYPE(message) == GST_MESSAGE_ERROR) {
+        GError *err     = nullptr;
+        gchar  *dbgInfo = nullptr;
+        gst_message_parse_error(message, &err, &dbgInfo);
+        nhlog::ui()->error("SFU: publisher pipeline error: {} ({})",
+                           err->message, dbgInfo ? dbgInfo : "none");
+        emit self->failed(QString::fromUtf8(err->message));
+        g_error_free(err);
+        g_free(dbgInfo);
+    }
+    return TRUE;
 }
 
 void
@@ -643,7 +889,7 @@ GStreamerSFUSession::acceptRenegotiationOffer(const std::string &sdp)
             nhlog::ui()->info("SFU: transceiver {} direction: {}", i, static_cast<int>(dir));
             g_object_set(
               trans, "direction", GST_WEBRTC_RTP_TRANSCEIVER_DIRECTION_RECVONLY, nullptr);
-            g_signal_emit_by_name(trans, "set-codec-preferences", caps);
+            g_object_set(trans, "codec-preferences", caps, nullptr);
         }
         g_array_unref(transceivers);
     }
@@ -653,6 +899,242 @@ GStreamerSFUSession::acceptRenegotiationOffer(const std::string &sdp)
     g_signal_emit_by_name(webrtc_, "create-answer", nullptr, answerPromise);
 
     return true;
+}
+
+bool
+GStreamerSFUSession::initPublisher()
+{
+    nhlog::ui()->info("SFU: initializing publisher pipeline");
+
+    if (pubPipe_) {
+        nhlog::ui()->warn("SFU: publisher already initialized");
+        return false;
+    }
+
+    pubPipe_ = gst_pipeline_new("sfu-publisher");
+    if (!pubPipe_) {
+        nhlog::ui()->error("SFU: failed to create publisher pipeline");
+        return false;
+    }
+
+    pubWebrtc_ = gst_element_factory_make("webrtcbin", "pub-webrtcbin");
+    if (!pubWebrtc_) {
+        nhlog::ui()->error("SFU: failed to create publisher webrtcbin");
+        gst_object_unref(pubPipe_);
+        pubPipe_ = nullptr;
+        return false;
+    }
+
+    g_object_set(pubWebrtc_,
+                 "bundle-policy", GST_WEBRTC_BUNDLE_POLICY_MAX_BUNDLE,
+                 "stun-server",   STUN_SERVER,
+                 nullptr);
+
+
+    GstDevice *device = devices_.audioDevice();
+    if (!device)
+        return false;
+
+    GstElement *src      = gst_element_factory_make("autoaudiosrc",  "mic_src");
+    GstElement *audioCaps = gst_element_factory_make("capsfilter", "audio_caps");
+    GstElement *convert  = gst_element_factory_make("audioconvert",  "mic_convert");
+    GstElement *resample = gst_element_factory_make("audioresample", "mic_resample");
+    GstElement *enc      = gst_element_factory_make("opusenc",       "mic_enc");
+    GstElement *pay      = gst_element_factory_make("rtpopuspay",    "mic_pay");
+
+    GstCaps *rawCaps =
+      gst_caps_from_string("audio/x-raw,format=S16LE,channels=1,rate=48000,layout=interleaved");
+    g_object_set(audioCaps, "caps", rawCaps, nullptr);
+    gst_caps_unref(rawCaps);
+
+    if (!src || !audioCaps || !convert || !resample || !enc || !pay) {
+        nhlog::ui()->error("SFU: failed to create publisher audio elements");
+        endPublisher();
+        return false;
+    }
+
+    g_object_set(enc, "bitrate", 32000, "inband-fec", TRUE, "dtx", TRUE, nullptr);
+    g_object_set(pay, "pt", 111, "ssrc", g_random_int(), nullptr);
+
+    gst_bin_add_many(GST_BIN(pubPipe_),
+                     pubWebrtc_, src, audioCaps, convert, resample, enc, pay,
+                     nullptr);
+
+    if (!gst_element_link_many(src, audioCaps, convert, resample, enc, pay, nullptr)) {
+        nhlog::ui()->error("SFU: failed to link publisher audio chain");
+        endPublisher();
+        return false;
+    }
+
+    GstPad *webrtcSink = gst_element_request_pad_simple(pubWebrtc_, "sink_%u");
+    if (!webrtcSink) {
+        nhlog::ui()->error("SFU: could not get webrtcbin sink pad for publisher");
+        endPublisher();
+        return false;
+    }
+
+    GstWebRTCRTPTransceiver *trans = nullptr;
+    g_object_get(webrtcSink, "transceiver", &trans, nullptr);
+    if (!trans) {
+        nhlog::ui()->error("SFU: could not get transceiver from webrtcbin sink pad");
+        gst_object_unref(webrtcSink);
+        endPublisher();
+        return false;
+    }
+
+
+
+    publisherSsrc_ = g_random_int();
+
+    g_object_set(pay, "ssrc", publisherSsrc_, nullptr);
+
+    g_object_set(trans, "direction",
+                 GST_WEBRTC_RTP_TRANSCEIVER_DIRECTION_SENDONLY, nullptr);
+
+    GstCaps *codecCaps = gst_caps_from_string(
+        "application/x-rtp,"
+        "media=audio,"
+        "encoding-name=OPUS,"
+        "payload=111,"
+        "clock-rate=48000");
+    g_object_set(trans, "codec-preferences", codecCaps, nullptr);
+    gst_caps_unref(codecCaps);
+    gst_object_unref(trans);
+
+    nhlog::ui()->info("SFU: configured single SENDONLY transceiver with Opus codec prefs");
+
+    GstPad *paySrc = gst_element_get_static_pad(pay, "src");
+    gst_pad_add_probe(paySrc, GST_PAD_PROBE_TYPE_BUFFER,
+                      sframeEncryptProbe, this, nullptr);
+
+    if (gst_pad_link(paySrc, webrtcSink) != GST_PAD_LINK_OK) {
+        nhlog::ui()->error("SFU: failed to link rtpopuspay → webrtcbin");
+        gst_object_unref(paySrc);
+        gst_object_unref(webrtcSink);
+        endPublisher();
+        return false;
+    }
+    gst_object_unref(paySrc);
+    gst_object_unref(webrtcSink);
+    nhlog::ui()->info("SFU: encrypt probe installed, full chain assembled");
+
+    g_signal_connect(pubWebrtc_, "on-ice-candidate",
+                     G_CALLBACK(onPubICECandidate), this);
+    g_signal_connect(pubWebrtc_, "notify::ice-connection-state",
+                     G_CALLBACK(onPubICEConnectionState), this);
+    g_signal_connect(pubWebrtc_, "notify::connection-state",
+                  G_CALLBACK(onPubConnectionState), this);
+
+    configurePubTurnServers();
+
+    GstBus *bus = gst_pipeline_get_bus(GST_PIPELINE(pubPipe_));
+    pubBusWatchId_ = gst_bus_add_watch(bus, onPubBusMessage, this);
+    gst_object_unref(bus);
+
+    GstStateChangeReturn ret = gst_element_set_state(pubPipe_, GST_STATE_READY);
+    if (ret == GST_STATE_CHANGE_FAILURE) {
+        nhlog::ui()->error("SFU: failed to start publisher pipeline");
+        endPublisher();
+        return false;
+    }
+
+    GstPromise *offerPromise =
+        gst_promise_new_with_change_func(onPublisherOfferCreated, this, nullptr);
+    g_signal_emit_by_name(pubWebrtc_, "create-offer", nullptr, offerPromise);
+
+
+    nhlog::ui()->info("SFU: publisher pipeline started (offer pending)");
+    return true;
+}
+
+void
+GStreamerSFUSession::onPubConnectionState(GstElement *webrtc, GParamSpec *, gpointer user_data)
+{
+    auto *self = static_cast<GStreamerSFUSession *>(user_data);
+    GstWebRTCPeerConnectionState state;
+    g_object_get(webrtc, "connection-state", &state, nullptr);
+
+    if (state == GST_WEBRTC_PEER_CONNECTION_STATE_CONNECTED) {
+        self->iceConnected_ = true;
+        nhlog::ui()->info("SFU: publisher peer connection fully established — opening mic valve");
+    } else if (state == GST_WEBRTC_PEER_CONNECTION_STATE_FAILED) {
+        nhlog::ui()->error("SFU: publisher peer connection failed");
+        emit self->failed(QStringLiteral("Publisher peer connection failed"));
+    }
+}
+
+void
+GStreamerSFUSession::endPublisher()
+{
+    iceConnected_ = false;
+    pubWebrtc_ = nullptr;
+
+    if (pubPipe_) {
+        gst_element_set_state(pubPipe_, GST_STATE_NULL);
+        gst_object_unref(pubPipe_);
+        pubPipe_ = nullptr;
+    }
+    if (pubBusWatchId_) {
+        g_source_remove(pubBusWatchId_);
+        pubBusWatchId_ = 0;
+    }
+    pendingPubCandidates_.clear();
+}
+void
+GStreamerSFUSession::acceptPublisherAnswer(const std::string &sdp)
+{
+    if (!pubWebrtc_) {
+        nhlog::ui()->error("SFU: acceptPublisherAnswer — no publisher pipeline");
+        return;
+    }
+
+    nhlog::ui()->info("SFU: setting publisher remote answer");
+
+    GstSDPMessage *sdpMsg = nullptr;
+    if (gst_sdp_message_new_from_text(sdp.c_str(), &sdpMsg) != GST_SDP_OK) {
+        nhlog::ui()->error("SFU: failed to parse publisher answer SDP");
+        return;
+    }
+
+    GstWebRTCSessionDescription *answer =
+        gst_webrtc_session_description_new(GST_WEBRTC_SDP_TYPE_ANSWER, sdpMsg);
+    GstPromise *promise = gst_promise_new();
+    g_signal_emit_by_name(pubWebrtc_, "set-remote-description", answer, promise);
+    gst_promise_wait(promise);
+    gst_promise_unref(promise);
+    gst_webrtc_session_description_free(answer);
+
+    GstStateChangeReturn ret = gst_element_set_state(pubPipe_, GST_STATE_PLAYING);
+    if (ret == GST_STATE_CHANGE_FAILURE) {
+        nhlog::ui()->error("SFU: failed to set publisher pipeline to PLAYING");
+        emit failed(QStringLiteral("Publisher pipeline failed to start"));
+    } else if (ret == GST_STATE_CHANGE_ASYNC) {
+        nhlog::ui()->info("SFU: publisher pipeline starting asynchronously");
+    } else {
+        nhlog::ui()->info("SFU: publisher pipeline state set to PLAYING (sync)");
+    }
+
+    for (const auto &[candidate, mlineindex] : pendingPubCandidates_) {
+        g_signal_emit_by_name(pubWebrtc_, "add-ice-candidate",
+                              static_cast<guint>(mlineindex),
+                              candidate.c_str());
+    }
+    pendingPubCandidates_.clear();
+
+    nhlog::ui()->info("SFU: publisher answer applied");
+}
+void
+GStreamerSFUSession::addPublisherICECandidate(const std::string &candidate,
+                                              const std::string &sdpMid,
+                                              int sdpMLineIndex)
+{
+    if (!pubWebrtc_) {
+        pendingPubCandidates_.push_back({candidate, sdpMLineIndex});
+        return;
+    }
+    g_signal_emit_by_name(pubWebrtc_, "add-ice-candidate",
+                          static_cast<guint>(sdpMLineIndex),
+                          candidate.c_str());
 }
 
 void
@@ -670,5 +1152,15 @@ GStreamerSFUSession::configureTurnServers() const
     if (turnServers_.empty())
         nhlog::ui()->warn("SFU: no TURN servers configured");
 }
+void
+GStreamerSFUSession::configurePubTurnServers()
+{
+    if (!pubWebrtc_) return;
+    for (const auto &uri : turnServers_) {
+        gboolean ok;
+        g_signal_emit_by_name(pubWebrtc_, "add-turn-server", uri.c_str(), &ok);
+    }
+}
 
 #endif // GSTREAMER_AVAILABLE
+
