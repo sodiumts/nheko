@@ -422,6 +422,8 @@ public:
 
     void refetchOnlineKeyBackupKeys() { events.refetchOnlineKeyBackupKeys(); };
 
+    std::string getLastFociPreferred() { return lastFociPrefered_; }
+
 
 public slots:
     void setCurrentIndex(int index);
@@ -554,6 +556,7 @@ private:
     void updateCallParticipants(const mtx::events::StateEvent<mtx::events::state::CallMember>& event);
 
     QSet<QString> activeCallParticipants_;
+    std::string lastFociPrefered_;
     int callParticipantsCount_ = 0;
     bool isInCall_ = false;
     bool isMuted_ = false;

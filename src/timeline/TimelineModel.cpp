@@ -1408,7 +1408,8 @@ TimelineModel::updateLastMessage()
         return;
     }
 }
-void TimelineModel::updateCallParticipants(const mtx::events::StateEvent<mtx::events::state::CallMember>& event)
+void TimelineModel::updateCallParticipants(
+    const mtx::events::StateEvent<mtx::events::state::CallMember>& event)
 {
     const auto& content = event.content;
     const QString userId = QString::fromStdString(event.sender);
@@ -1418,7 +1419,6 @@ void TimelineModel::updateCallParticipants(const mtx::events::StateEvent<mtx::ev
                       userId.toStdString(), content.application);
 
     if (content.application.empty()) {
-        // Leave event
         if (activeCallParticipants_.remove(userId)) {
             changed = true;
             nhlog::ui()->info("Removed user {} from active participants", userId.toStdString());
@@ -1430,11 +1430,15 @@ void TimelineModel::updateCallParticipants(const mtx::events::StateEvent<mtx::ev
 
         if (isActive) {
             if (!activeCallParticipants_.contains(userId)) {
+                // new participant joining
                 activeCallParticipants_.insert(userId);
                 changed = true;
 
-                //ChatPage::instance()->matrixRTC()->onCallMemberEvent(event.sender,
-                //                                                     content.device_id);
+                if (!content.foci_preferred.empty()) {
+                    lastFociPrefered_ = content.foci_preferred[0].livekit_service_url;
+                    nhlog::ui()->info("Updated lastFociPrefered_ from joining user {}",
+                                      userId.toStdString());
+                }
 
                 nhlog::ui()->info("Added user {} to active participants", userId.toStdString());
             } else {
@@ -1451,6 +1455,12 @@ void TimelineModel::updateCallParticipants(const mtx::events::StateEvent<mtx::ev
     if (changed) {
         callParticipantsCount_ = activeCallParticipants_.size();
         nhlog::ui()->info("callParticipantsCount changed to {}", callParticipantsCount_);
+
+        // reset foci preferred when the call becomes empty
+        if (callParticipantsCount_ == 0) {
+            lastFociPrefered_.clear();
+        }
+
         emit callParticipantsCountChanged();
     }
 }

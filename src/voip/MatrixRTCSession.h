@@ -87,12 +87,15 @@ private:
     void sendMembershipEvent(bool leave = false);
     void fetchOpenidToken();
     void requestLiveKitJWT(const mtx::responses::MatrixOpenidToken &openIDToken);
+    void getHomeserverLivekitBackend();
 
     void sendEncryptionKeyToUser(const std::string &matrixUserId,
                                  uint8_t kid,
                                  const std::vector<uint8_t> &rawKeyMaterial);
     void sendEncryptionKeyToAllParticipants(uint8_t kid,
                                             const std::vector<uint8_t> &rawKeyMaterial);
+
+    std::optional<mtx::events::state::CallMember> findActiveCallMember(TimelineModel *timelineModel);
 
     std::set<std::string> activeParticipantUserIds_;
     uint8_t currentEncKid_ = 0;
@@ -117,6 +120,8 @@ private:
     std::set<uint8_t> usedKIDs_;
     //std::unordered_map<std::string, std::string> participantDevice_;
     webrtc::ScreenShareType screenShareType_;
+
+    std::string livekitEndpoint_ = "";
 
     static MatrixRTCSession *instance_;
 };

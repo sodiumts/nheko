@@ -10,8 +10,10 @@
 #include "MatrixClient.h"
 #include "ScreenCastPortal.h"
 #include "TimelineModel.h"
+#include "UserSettingsPage.h"
 
 #include <QRandomGenerator>
+#include <mtx/responses/well-known.hpp>
 
 MatrixRTCSession * MatrixRTCSession::instance_ = nullptr;
 
@@ -59,7 +61,9 @@ void MatrixRTCSession::requestLiveKitJWT(const mtx::responses::MatrixOpenidToken
     }
     // TODO: Change this to no longer be a static url as well as make it refresh the token each time
 
-    const QUrl url("https://livekit.ernests.id.lv/sfu/get");
+    std::string livekitUrlString = livekitEndpoint_ + "/sfu/get";
+
+    const QUrl url(livekitUrlString.c_str());
     QNetworkRequest request(url);
     request.setHeader(QNetworkRequest::ContentTypeHeader, "application/json");
 
@@ -79,6 +83,44 @@ void MatrixRTCSession::requestLiveKitJWT(const mtx::responses::MatrixOpenidToken
     nam_->post(request, postData);
 }
 
+void
+MatrixRTCSession::getHomeserverLivekitBackend()
+{
+    http::client()->well_known(
+      [this](const mtx::responses::WellKnown &res, mtx::http::RequestErr err) {
+          if (err) {
+              if (err->status_code == 404) {
+                  nhlog::net()->info("Autodiscovery: No .well-known.");
+                  return;
+              }
+
+              if (!err->parse_error.empty()) {
+                  nhlog::net()->error("Autodiscovery failed. Received malformed response. {}",
+                                      err->parse_error);
+                  return;
+              }
+              nhlog::net()->error("Autodiscovery failed. Unknown error when "
+                                  "requesting .well-known. {}",
+                                  *err);
+              return;
+          }
+
+          if (res.rtc_transports.has_value()) {
+              for (const auto &foci : *res.rtc_transports) {
+                  if (foci.type == "livekit") {
+                      this->livekitEndpoint_ = foci.data.value("livekit_service_url", "");
+                  }
+              }
+          }
+          if (this->livekitEndpoint_ == "") {
+              nhlog::net()->error("Livekit service URL not found in .well_known/matrix/client");
+              emit error("Failed to obtain LiveKit service url");
+              return;
+          }
+
+          nhlog::net()->info("Found livekit backend url: {}", livekitEndpoint_);
+      });
+}
 void MatrixRTCSession::join(const std::string &roomId,
                            const std::string &userId,
                            const std::string &deviceI,
@@ -90,6 +132,14 @@ void MatrixRTCSession::join(const std::string &roomId,
     deviceId_ = deviceI;
     stateKey_ = "_" + userId + "_" + deviceI + "_m.call";
     isActive_ = true;
+
+    // If creating a new call, then create new livekit thing using your own livekit server
+    if (timelineModel->getLastFociPreferred().empty()) {
+        getHomeserverLivekitBackend();
+    } else {
+        // use foci of the last person that joined the call, i.e. repeated creators foci
+        livekitEndpoint_ = timelineModel->getLastFociPreferred();
+    }
 
     http::client()->get_turn_server([this](const mtx::responses::TurnServer &turn, mtx::http::RequestErr err) {
         if (!err && !turn.uris.empty()) {
@@ -399,7 +449,7 @@ void MatrixRTCSession::sendMembershipEvent(bool leave)
 
         mtx::events::state::CallMemberFocus focus;
         focus.type                = "livekit";
-        focus.livekit_service_url = "https://livekit.ernests.id.lv";
+        focus.livekit_service_url = livekitEndpoint_;
         focus.livekit_alias       = roomId_;
         evt.foci_preferred.push_back(focus);
 
