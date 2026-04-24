@@ -104,17 +104,12 @@ private:
 
     GstElement* pipe_ = nullptr;
     GstElement* webrtc_ = nullptr;
-    GstElement* audioMixer_ { nullptr };
-    GstElement* audioMixerConvert_ { nullptr };
-    GstElement* audioMixerResample_ { nullptr };
-    GstElement* audioSink_ { nullptr };
     guint busWatchId_ = 0;
 
     std::vector<std::pair<std::string, int>> pendingCandidates_;
 
     GstElement *pubPipe_ = nullptr;
     GstElement *pubWebrtc_ = nullptr;
-    //GstElement *pubValve_ = nullptr;
     guint pubBusWatchId_ = 0;
     bool micMuted_ = false;
     bool iceConnected_ = false;

@@ -26,9 +26,9 @@ MatrixRTCSession::MatrixRTCSession(QObject *parent)
   : QObject(parent)
 {
     connect(&membershipRefreshTimer_, &QTimer::timeout, this, &MatrixRTCSession::refreshMembership);
-    //connect(&keyRotationTimer_, &QTimer::timeout, this, &MatrixRTCSession::rotateEncryptionKey);
+    connect(&keyRotationTimer_, &QTimer::timeout, this, &MatrixRTCSession::rotateEncryptionKey);
 
-    //keyRotationTimer_.setInterval(30'000);
+    keyRotationTimer_.setInterval(30'000);
 
     instance_ = this;
 }
@@ -59,7 +59,6 @@ void MatrixRTCSession::requestLiveKitJWT(const mtx::responses::MatrixOpenidToken
         nam_ = new QNetworkAccessManager(this);
         connect(nam_, &QNetworkAccessManager::finished, this, &MatrixRTCSession::onCredentialsReceived);
     }
-    // TODO: Change this to no longer be a static url as well as make it refresh the token each time
 
     std::string livekitUrlString = livekitEndpoint_ + "/sfu/get";
 
@@ -77,6 +76,7 @@ void MatrixRTCSession::requestLiveKitJWT(const mtx::responses::MatrixOpenidToken
     payload["openid_token"] = openidObj;
 
     const QByteArray postData = QJsonDocument(payload).toJson();
+
 
     nhlog::net()->info("THING THANG {}", postData.toStdString());
 
@@ -133,11 +133,9 @@ void MatrixRTCSession::join(const std::string &roomId,
     stateKey_ = "_" + userId + "_" + deviceI + "_m.call";
     isActive_ = true;
 
-    // If creating a new call, then create new livekit thing using your own livekit server
     if (timelineModel->getLastFociPreferred().empty()) {
         getHomeserverLivekitBackend();
     } else {
-        // use foci of the last person that joined the call, i.e. repeated creators foci
         livekitEndpoint_ = timelineModel->getLastFociPreferred();
     }
 
@@ -184,7 +182,6 @@ void MatrixRTCSession::onCredentialsReceived(QNetworkReply *reply)
         return;
     }
 
-    // refresh memebership message
     membershipRefreshTimer_.start(
         std::chrono::milliseconds(3600000 * 8 / 10));
 
@@ -205,7 +202,6 @@ void MatrixRTCSession::onCredentialsReceived(QNetworkReply *reply)
                 const std::string userId = identity.toStdString();
                 activeParticipantUserIds_.insert(userId);
 
-                // Send our current key to this late joiner immediately
                 if (!currentEncKeyMaterial_.empty())
                     sendEncryptionKeyToUser(userId, currentEncKid_, currentEncKeyMaterial_);
 
@@ -277,8 +273,6 @@ uint8_t findFreeKID(const std::set<uint8_t>& usedKIDs) {
             return candidate;
         }
     }
-    // All 256 KIDs are used – this should never happen in practice.
-    // Fallback: return a random KID (or 0) and hope for the best.
     return static_cast<uint8_t>(QRandomGenerator::global()->bounded(256));
 }
 
@@ -289,10 +283,8 @@ void MatrixRTCSession::publishMicrophone()
         return;
     }
 
-    // Start the GStreamer publisher pipeline via LiveKitSession
     livekitSession_->publishMicrophone();
 
-    // Generate the first encryption key and distribute it
     auto *lk = livekitSession_;
     connect(
       lk,
@@ -369,7 +361,6 @@ void MatrixRTCSession::sendEncryptionKeyToUser(const std::string &matrixUserId,
     std::string userId;
     std::string deviceId;
 
-    // Find the last colon to separate device ID
     size_t colonPos = matrixUserId.rfind(':');
     if (colonPos == std::string::npos) {
         nhlog::net()->warn("MatrixRTC: invalid user/device format: {}, cannot send key", matrixUserId);

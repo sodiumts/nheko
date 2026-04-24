@@ -32,7 +32,6 @@ GStreamerSFUSession::end()
 {
     endPublisher();
 
-    audioSink_  = nullptr;
     if (pipe_) {
         gst_element_set_state(pipe_, GST_STATE_NULL);
         gst_object_unref(pipe_);
@@ -445,34 +444,10 @@ GStreamerSFUSession::initSubscriber(const std::string &sdp)
 
     gst_bin_add(GST_BIN(pipe_), webrtc_);
 
-    g_object_set(webrtc_, "latency", 40, nullptr);
-
     guint actualLatency = 0;
     g_object_get(webrtc_, "latency", &actualLatency, nullptr);
     nhlog::ui()->info("SFU: webrtcbin jitter buffer latency = {}ms", actualLatency);
 
-    audioMixer_         = gst_element_factory_make("audiomixer",    "audio_mixer");
-    audioMixerConvert_  = gst_element_factory_make("audioconvert",  "audio_mixer_convert");
-    audioMixerResample_ = gst_element_factory_make("audioresample", "audio_mixer_resample");
-    audioSink_          = gst_element_factory_make("autoaudiosink", "audio_sink");
-
-
-    if (!audioMixer_ || !audioMixerConvert_ || !audioMixerResample_ || !audioSink_) {
-        nhlog::ui()->error("SFU: failed to create output audio chain");
-        gst_webrtc_session_description_free(offer);
-        return false;
-    }
-
-    gst_bin_add_many(GST_BIN(pipe_),
-        audioMixer_, audioMixerConvert_, audioMixerResample_, audioSink_,
-        nullptr);
-
-    if (!gst_element_link_many(audioMixer_, audioMixerConvert_,
-                               audioMixerResample_, audioSink_, nullptr)) {
-        nhlog::ui()->error("SFU: failed to link mixer output chain");
-        gst_webrtc_session_description_free(offer);
-        return false;
-    }
 
     configureTurnServers();
 
@@ -756,69 +731,53 @@ GStreamerSFUSession::onPadAdded(GstElement *, GstPad *pad, const gpointer user_d
     if (encoding && g_ascii_strcasecmp(encoding, "OPUS") != 0)
         return;
 
-    GstElement *queue    = gst_element_factory_make("queue", nullptr);
-    GstElement *depay    = gst_element_factory_make("rtpopusdepay", nullptr);
-    GstElement *dec      = gst_element_factory_make("opusdec", nullptr);
-    GstElement *convert  = gst_element_factory_make("audioconvert", nullptr);
-    GstElement *resample = gst_element_factory_make("audioresample", nullptr);
+    GstElement *queue    = gst_element_factory_make("queue",          nullptr);
+    GstElement *depay    = gst_element_factory_make("rtpopusdepay",   nullptr);
+    GstElement *dec      = gst_element_factory_make("opusdec",        nullptr);
+    GstElement *audiorate = gst_element_factory_make("audiorate", nullptr);
+    GstElement *convert  = gst_element_factory_make("audioconvert",   nullptr);
+    GstElement *resample = gst_element_factory_make("audioresample",  nullptr);
+    GstElement *sink     = gst_element_factory_make("autoaudiosink",  nullptr);
 
-    if (!queue || !depay || !dec || !convert || !resample) {
+    if (!queue || !depay || !dec || !convert || !resample || !sink) {
         nhlog::ui()->error("SFU: failed to create audio branch elements");
         return;
     }
 
-    g_object_set(dec, "use-inband-fec", TRUE, nullptr);
+    g_object_set(dec, "use-inband-fec", TRUE, "plc", TRUE, nullptr);
 
-    gst_bin_add_many(GST_BIN(self->pipe_), queue, depay, dec, convert, resample, nullptr);
+    gst_bin_add_many(GST_BIN(self->pipe_), queue, depay, dec, audiorate, convert, resample, sink, nullptr);
 
-    if (!gst_element_link_many(queue, depay, dec, convert, resample, nullptr)) {
+    if (!gst_element_link_many(queue, depay, dec, audiorate, convert, resample, sink, nullptr)) {
         nhlog::ui()->error("SFU: failed to link audio branch");
         return;
     }
 
-    // attach sframe decryption to depay sink pad
-    // it strips sframe header, decrypts the payload and resizes
-    // and opusdepay just has to decode the raw opus packet
     if (GstPad *depaySinkPad = gst_element_get_static_pad(depay, "sink")) {
-        gst_pad_add_probe(
-          depaySinkPad, GST_PAD_PROBE_TYPE_BUFFER, sframeDecryptProbe, self, nullptr);
+        gst_pad_add_probe(depaySinkPad, GST_PAD_PROBE_TYPE_BUFFER,
+                          sframeDecryptProbe, self, nullptr);
         gst_object_unref(depaySinkPad);
-        nhlog::ui()->info("SFU: SFrame decrypt probe installed on depay sink pad");
     } else {
         nhlog::ui()->error("SFU: could not get depay sink pad for decrypt probe");
     }
 
-    // webrtcbin src -> queue sink
     GstPad *queueSink = gst_element_get_static_pad(queue, "sink");
     if (!queueSink || gst_pad_link(pad, queueSink) != GST_PAD_LINK_OK) {
         nhlog::ui()->error("SFU: failed to link webrtc pad to queue");
-        if (queueSink)
-            gst_object_unref(queueSink);
+        if (queueSink) gst_object_unref(queueSink);
         return;
     }
     gst_object_unref(queueSink);
 
-    // resample src-> audiomixer request
-    GstPad *mixerSink   = gst_element_request_pad_simple(self->audioMixer_, "sink_%u");
-    GstPad *resampleSrc = gst_element_get_static_pad(resample, "src");
-    if (!mixerSink || !resampleSrc || gst_pad_link(resampleSrc, mixerSink) != GST_PAD_LINK_OK) {
-        nhlog::ui()->error("SFU: failed to link decoded audio into mixer");
-        if (mixerSink)
-            gst_object_unref(mixerSink);
-        if (resampleSrc)
-            gst_object_unref(resampleSrc);
-        return;
-    }
-    gst_object_unref(mixerSink);
-    gst_object_unref(resampleSrc);
-
     gst_element_sync_state_with_parent(queue);
     gst_element_sync_state_with_parent(depay);
     gst_element_sync_state_with_parent(dec);
+    gst_element_sync_state_with_parent(audiorate);
     gst_element_sync_state_with_parent(convert);
     gst_element_sync_state_with_parent(resample);
+    gst_element_sync_state_with_parent(sink);
 
-    nhlog::ui()->info("SFU: routed audio pad into shared mixer (with SFrame decryption)");
+    nhlog::ui()->info("SFU: routed audio pad to dedicated sink (with SFrame decryption)");
 }
 
 gboolean
