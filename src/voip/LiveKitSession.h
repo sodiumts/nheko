@@ -31,6 +31,7 @@ public:
     void disconnect();
     void publishMicrophone();
     void toggleMicMute();
+    void setMicMuted(bool mute);
     void setTurnServers(const std::vector<std::string> &uris,
                                          const std::string &username,
                                          const std::string &credential);
@@ -42,6 +43,7 @@ public:
     void setDecryptionKey(uint8_t kid, const std::vector<uint8_t> &rawKey);
 
     GStreamerSFUSession *sfu_session() const { return sfuSession_; }
+    bool isMicMuted() const { return micMuted_; }
 
 signals:
     void connected();

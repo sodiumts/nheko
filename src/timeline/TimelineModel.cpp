@@ -2378,8 +2378,11 @@ TimelineModel::joinCall()
     if (matrixRTC->isActive()) {
         matrixRTC->getCurrentTimeline()->leaveCall();
     }
+    matrixRTC->join(room_id_.toStdString(),
+                    http::client()->user_id().to_string(),
+                    http::client()->device_id(),
+                    this);
 
-    matrixRTC->join(room_id_.toStdString(), http::client()->user_id().to_string(), http::client()->device_id(), this);
     isInCall_ = true;
     emit isInCallChanged();
 }

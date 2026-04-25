@@ -418,6 +418,16 @@ LiveKitSession::toggleMicMute()
 }
 
 void
+LiveKitSession::setMicMuted(bool muted) {
+    micMuted_ = muted;
+    if (sfuSession_)
+        sfuSession_->setMicMuted(muted);
+    if (!micTrackSid_.empty())
+        sendMuteTrack(micTrackSid_, micMuted_);
+}
+
+
+void
 LiveKitSession::sendAnswer(const std::string &sdp)
 {
     livekit::SignalRequest request;

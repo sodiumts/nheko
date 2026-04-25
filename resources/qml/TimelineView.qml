@@ -143,6 +143,10 @@ Item {
             Layout.fillWidth: true
             z: 3
         }
+        ActiveGroupCallBar {
+            Layout.fillWidth: true
+            z: 3            
+        }
         Rectangle {
             Layout.fillWidth: true
             color: Nheko.theme.separator

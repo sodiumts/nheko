@@ -41,6 +41,7 @@ public:
     void setTurnServers(const std::vector<std::string>& uris) { turnServers_ = uris; }
     void end();
     bool toggleMicMute();
+    void setMicMuted(bool muted);
 
     void setDecryptionKey(uint8_t kid, const std::vector<uint8_t>& rawKey);
 

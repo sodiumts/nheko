@@ -651,6 +651,9 @@ if(VOIP)
         pkg_check_modules(GSTREAMER REQUIRED IMPORTED_TARGET gstreamer-d3d11-1.0)
     endif()
 
+    # so that it doesn't complain about nullability when compiling protobuf
+    add_compile_options(-Wno-error=nullability-extension)
+
     find_package(Protobuf REQUIRED)
 
     set(LIVEKIT_PROTO_DIR "${CMAKE_CURRENT_SOURCE_DIR}/src/voip/livekit")
@@ -853,6 +856,7 @@ set(QML_SOURCES
     resources/qml/ui/animations/BlinkAnimation.qml
     resources/qml/ui/media/MediaControls.qml
     resources/qml/voip/ActiveCallBar.qml
+    resources/qml/voip/ActiveGroupCallBar.qml
     resources/qml/voip/CallDevices.qml
     resources/qml/voip/CallInvite.qml
     resources/qml/voip/CallInviteBar.qml

@@ -24,12 +24,14 @@ class MatrixRTCSession : public QObject {
 
     Q_PROPERTY(webrtc::ScreenShareType screenShareType READ screenShareType NOTIFY screenShareChanged)
     Q_PROPERTY(bool screenShareReady READ screenShareReady NOTIFY screenShareChanged)
+    Q_PROPERTY(bool isOnCall READ isOnCall NOTIFY isOnCallChanged)
+    Q_PROPERTY(int callState READ callState NOTIFY callStateChanged)
+    Q_PROPERTY(bool isMicMuted READ isMicMuted NOTIFY micMutedChanged)
+    Q_PROPERTY(int callType READ callType CONSTANT)
 
 public:
-    explicit MatrixRTCSession(QObject *parent = nullptr);
-    ~MatrixRTCSession() override;
-
-    static MatrixRTCSession* instance();
+    static MatrixRTCSession *create(QQmlEngine *qmlEngine, QJSEngine *jsEngine);
+    MatrixRTCSession(QObject *);
 
     LiveKitSession* livekitSession() const { return livekitSession_; }
 
@@ -59,7 +61,10 @@ public:
     webrtc::ScreenShareType screenShareType() const { return screenShareType_; }
     bool screenShareReady() const;
 
-    //void onCallMemberEvent(const std::string& userId, const std::string& deviceId);
+    bool isOnCall() const { return isActive_; }
+    int callState() const { return callState_;};
+    bool isMicMuted() const { return livekitSession_ ? livekitSession_->isMicMuted() : false; }
+    int callType() const { return static_cast<int>(webrtc::CallType::VOICE); }
 
 signals:
     void joined();
@@ -69,6 +74,10 @@ signals:
     void participantLeft(const QString &userId);
 
     void screenShareChanged();
+
+    void isOnCallChanged();
+    void callStateChanged();
+    void micMutedChanged();
 
 public slots:
     void startScreenShare(const QString &roomid, unsigned int windowIndex = 0);
@@ -82,6 +91,7 @@ public slots:
     void setScreenShareType(unsigned int index);
 
     void setupScreenShareXDP();
+    void toggleMicMute();
 
 private:
     void sendMembershipEvent(bool leave = false);
@@ -95,11 +105,15 @@ private:
     void sendEncryptionKeyToAllParticipants(uint8_t kid,
                                             const std::vector<uint8_t> &rawKeyMaterial);
 
+    void setCallState(int newState);
+
     std::optional<mtx::events::state::CallMember> findActiveCallMember(TimelineModel *timelineModel);
 
     std::set<std::string> activeParticipantUserIds_;
     uint8_t currentEncKid_ = 0;
     std::vector<uint8_t> currentEncKeyMaterial_;
+
+    int callState_ = static_cast<int>(webrtc::State::DISCONNECTED);
 
     QTimer keyRotationTimer_;
 
@@ -118,10 +132,8 @@ private:
 
     std::map<uint8_t, std::vector<uint8_t>> pendingDecryptionKeys_;
     std::set<uint8_t> usedKIDs_;
-    //std::unordered_map<std::string, std::string> participantDevice_;
     webrtc::ScreenShareType screenShareType_;
 
     std::string livekitEndpoint_ = "";
 
-    static MatrixRTCSession *instance_;
 };

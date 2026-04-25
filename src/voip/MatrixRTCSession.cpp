@@ -7,6 +7,7 @@
 #include <qjsonobject.h>
 
 #include "Logging.h"
+#include "ChatPage.h"
 #include "MatrixClient.h"
 #include "ScreenCastPortal.h"
 #include "TimelineModel.h"
@@ -15,11 +16,23 @@
 #include <QRandomGenerator>
 #include <mtx/responses/well-known.hpp>
 
-MatrixRTCSession * MatrixRTCSession::instance_ = nullptr;
+MatrixRTCSession *MatrixRTCSession::create(QQmlEngine *qmlEngine, QJSEngine *)
+{
+    auto instance = ChatPage::instance()->matrixRTC();
+    Q_ASSERT(instance);
+    nhlog::net()->error("MatrixRTC create() instance: {:p}", (void *)instance);
+    Q_ASSERT(instance);
 
-MatrixRTCSession* MatrixRTCSession::instance() {
-    Q_ASSERT(instance_ != nullptr);
-    return instance_;
+    Q_ASSERT(qmlEngine->thread() == instance->thread());
+
+    static QJSEngine *s_engine = nullptr;
+    if (s_engine)
+        Q_ASSERT(qmlEngine == s_engine);
+    else
+        s_engine = qmlEngine;
+
+    QJSEngine::setObjectOwnership(instance, QJSEngine::CppOwnership);
+    return instance;
 }
 
 MatrixRTCSession::MatrixRTCSession(QObject *parent)
@@ -30,11 +43,7 @@ MatrixRTCSession::MatrixRTCSession(QObject *parent)
 
     keyRotationTimer_.setInterval(30'000);
 
-    instance_ = this;
-}
-
-MatrixRTCSession::~MatrixRTCSession() {
-    instance_ = nullptr;
+    callState_ = static_cast<int>(webrtc::State::DISCONNECTED);
 }
 
 
@@ -126,12 +135,16 @@ void MatrixRTCSession::join(const std::string &roomId,
                            const std::string &deviceI,
                            TimelineModel* timelineModel)
 {
+    nhlog::net()->error("join() this={}, isActive now={}", (void*)this, isActive_);
     currentTimeline_ = timelineModel;
     roomId_ = roomId;
     userId_ = userId;;
     deviceId_ = deviceI;
     stateKey_ = "_" + userId + "_" + deviceI + "_m.call";
     isActive_ = true;
+    nhlog::net()->error("SET TO TRUE");
+    emit isOnCallChanged();
+    setCallState(static_cast<int>(webrtc::State::CONNECTING));
 
     if (timelineModel->getLastFociPreferred().empty()) {
         getHomeserverLivekitBackend();
@@ -146,6 +159,15 @@ void MatrixRTCSession::join(const std::string &roomId,
         sendMembershipEvent(false);
         fetchOpenidToken();
     });
+}
+
+void
+MatrixRTCSession::setCallState(int newState) {
+    if (callState_ == newState) 
+        return;
+
+    callState_ = newState;
+    emit callStateChanged();
 }
 
 void
@@ -226,6 +248,8 @@ void MatrixRTCSession::onCredentialsReceived(QNetworkReply *reply)
 void MatrixRTCSession::leave()
 {
     isActive_ = false;
+    emit isOnCallChanged();
+    setCallState(static_cast<int>(webrtc::State::DISCONNECTED));
     membershipRefreshTimer_.stop();
     //keyRotationTimer_.stop();
     activeParticipantUserIds_.clear();
@@ -255,6 +279,7 @@ void MatrixRTCSession::refreshMembership()
 void MatrixRTCSession::onLiveKitConnected()
 {
     nhlog::ui()->info("MatrixRTC: connected to LiveKit");
+    setCallState(static_cast<int>(webrtc::State::CONNECTED));
     emit joined();
     publishMicrophone();
 }
@@ -262,6 +287,7 @@ void MatrixRTCSession::onLiveKitConnected()
 void MatrixRTCSession::onLiveKitError(const QString &message)
 {
     nhlog::ui()->error("MatrixRTC: LiveKit error: {}", message.toStdString());
+    setCallState(static_cast<int>(webrtc::State::DISCONNECTED));
     emit error(message);
     leave();
 }
@@ -419,6 +445,14 @@ void MatrixRTCSession::sendEncryptionKeyToAllParticipants(
     for (const auto &userId : activeParticipantUserIds_)
         sendEncryptionKeyToUser(userId, kid, rawKeyMaterial);
 }
+void MatrixRTCSession::toggleMicMute() {
+    nhlog::net()->error("Toggled mic");
+    if (livekitSession_) {
+        bool newMute = !livekitSession_->isMicMuted();
+        livekitSession_->setMicMuted(newMute);
+        emit micMutedChanged();
+    }
+}
 
 void MatrixRTCSession::sendMembershipEvent(bool leave)
 {
@@ -464,3 +498,4 @@ void MatrixRTCSession::sendMembershipEvent(bool leave)
         });
 }
 
+#include "moc_MatrixRTCSession.cpp"

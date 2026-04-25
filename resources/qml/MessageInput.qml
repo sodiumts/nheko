@@ -34,13 +34,7 @@ Rectangle {
         ScreenShare {
         }
     }
-    Component {
-        id: groupShareDialog
-
-        GroupScreen {
-
-        }
-    }
+    
     RowLayout {
         id: row
 
@@ -104,55 +98,6 @@ Rectangle {
                         room.leaveCall()
                     else
                         room.joinCall()
-                }
-            }
-        }
-
-        ImageButton {
-            Layout.alignment: Qt.AlignBottom
-            Layout.margins: 8
-            ToolTip.text: {
-                if (!room) return "";
-                if (room.isMuted)
-                    return qsTr("Unmute.")
-                return qsTr("Mute.")
-            }
-
-            ToolTip.visible: hovered
-            Layout.preferredHeight: 22
-            Layout.preferredWidth: 22
-            hoverEnabled: true
-            visible: CallManager.callsSupported && showAllButtons && room.isInCall && room && room.roomMemberCount > 2
-            opacity: 1
-            image: room && room.isMuted
-                ? ":/icons/icons/ui/microphone-mute.svg"
-                : ":/icons/icons/ui/microphone-unmute.svg"
-            onClicked: {
-                if (room) {
-                    if (room.isMuted)
-                        room.unmute()
-                    else
-                        room.mute()
-                }
-            }
-        }
-        ImageButton {
-            Layout.alignment: Qt.AlignBottom
-            Layout.margins: 8
-            ToolTip.text: "Share screen."
-
-            ToolTip.visible: hovered
-            Layout.preferredHeight: 22
-            Layout.preferredWidth: 22
-            hoverEnabled: true
-            visible: CallManager.callsSupported && showAllButtons && room.isInCall && room && room.roomMemberCount > 2
-            opacity: 1
-            image: ":/icons/icons/ui/screen-share.svg"
-            onClicked: {
-                if (room) {
-                    var dialog = groupShareDialog.createObject(timelineRoot);
-                    dialog.open();
-                    timelineRoot.destroyOnClose(dialog)
                 }
             }
         }

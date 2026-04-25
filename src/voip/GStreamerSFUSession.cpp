@@ -52,6 +52,11 @@ GStreamerSFUSession::toggleMicMute()
     nhlog::ui()->info("SFU: mic {}", micMuted_ ? "muted" : "unmuted");
     return micMuted_;
 }
+void
+GStreamerSFUSession::setMicMuted(bool muted) {
+    micMuted_ = muted;
+    nhlog::ui()->info("SFU: mic {}", micMuted_ ? "muted" : "unmuted");
+}
 
 void
 GStreamerSFUSession::setDecryptionKey(uint8_t kid, const std::vector<uint8_t> &rawKey)
@@ -220,7 +225,8 @@ GStreamerSFUSession::sframeDecryptProbe([[maybe_unused]] GstPad *pad,
     const auto payload        = static_cast<guint8 *>(gst_rtp_buffer_get_payload(&rtp));
     const guint headerLen        = gst_rtp_buffer_get_header_len(&rtp);
 
-    if (payloadLen < 3) { // need at least: 1 unencrypted + trailer (2 bytes)
+    // need at least: 1 unencrypted + trailer (2 bytes)
+    if (payloadLen < 3) { 
         gst_rtp_buffer_unmap(&rtp);
         return GST_PAD_PROBE_OK;
     }

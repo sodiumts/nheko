@@ -46,7 +46,7 @@ ChatPage::ChatPage(QSharedPointer<UserSettings> userSettings, QObject *parent)
   , userSettings_{userSettings}
   , notificationsManager(new NotificationsManager(this))
   , callManager_(new CallManager(this))
-  , rtc_session_((new MatrixRTCSession(this)))
+  , rtc_session_(new MatrixRTCSession(this))
 {
     setObjectName(QStringLiteral("chatPage"));
 
