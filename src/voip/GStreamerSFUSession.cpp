@@ -732,58 +732,82 @@ GStreamerSFUSession::onPadAdded(GstElement *, GstPad *pad, const gpointer user_d
     const char *encoding  = gst_structure_get_string(s, "encoding-name");
     gst_caps_unref(caps);
 
-    if (!media || g_strcmp0(media, "audio") != 0)
-        return;
-    if (encoding && g_ascii_strcasecmp(encoding, "OPUS") != 0)
-        return;
+    // audio subscription
+    if (media && g_strcmp0(media, "audio") == 0 &&
+        (!encoding || g_ascii_strcasecmp(encoding, "OPUS") == 0))
+    {
+        GstElement *queue     = gst_element_factory_make("queue",         nullptr);
+        GstElement *depay     = gst_element_factory_make("rtpopusdepay",  nullptr);
+        GstElement *dec       = gst_element_factory_make("opusdec",       nullptr);
+        GstElement *audiorate = gst_element_factory_make("audiorate",     nullptr);
+        GstElement *convert   = gst_element_factory_make("audioconvert",  nullptr);
+        GstElement *resample  = gst_element_factory_make("audioresample", nullptr);
+        GstElement *sink      = gst_element_factory_make("autoaudiosink", nullptr);
 
-    GstElement *queue    = gst_element_factory_make("queue",          nullptr);
-    GstElement *depay    = gst_element_factory_make("rtpopusdepay",   nullptr);
-    GstElement *dec      = gst_element_factory_make("opusdec",        nullptr);
-    GstElement *audiorate = gst_element_factory_make("audiorate", nullptr);
-    GstElement *convert  = gst_element_factory_make("audioconvert",   nullptr);
-    GstElement *resample = gst_element_factory_make("audioresample",  nullptr);
-    GstElement *sink     = gst_element_factory_make("autoaudiosink",  nullptr);
+        if (!queue || !depay || !dec || !convert || !resample || !sink) {
+            nhlog::ui()->error("SFU: failed to create audio branch elements");
+            return;
+        }
 
-    if (!queue || !depay || !dec || !convert || !resample || !sink) {
-        nhlog::ui()->error("SFU: failed to create audio branch elements");
+        g_object_set(dec, "use-inband-fec", TRUE, "plc", TRUE, nullptr);
+
+        gst_bin_add_many(GST_BIN(self->pipe_),
+                         queue, depay, dec, audiorate, convert, resample, sink, nullptr);
+
+        if (!gst_element_link_many(queue, depay, dec, audiorate, convert, resample, sink, nullptr)) {
+            nhlog::ui()->error("SFU: failed to link audio branch");
+            return;
+        }
+
+        if (GstPad *depaySinkPad = gst_element_get_static_pad(depay, "sink")) {
+            gst_pad_add_probe(depaySinkPad, GST_PAD_PROBE_TYPE_BUFFER,
+                              sframeDecryptProbe, self, nullptr);
+            gst_object_unref(depaySinkPad);
+        } else {
+            nhlog::ui()->error("SFU: could not get depay sink pad for decrypt probe");
+        }
+
+        GstPad *queueSink = gst_element_get_static_pad(queue, "sink");
+        if (!queueSink || gst_pad_link(pad, queueSink) != GST_PAD_LINK_OK) {
+            nhlog::ui()->error("SFU: failed to link webrtc pad to queue");
+            if (queueSink) gst_object_unref(queueSink);
+            return;
+        }
+        gst_object_unref(queueSink);
+
+        gst_element_sync_state_with_parent(queue);
+        gst_element_sync_state_with_parent(depay);
+        gst_element_sync_state_with_parent(dec);
+        gst_element_sync_state_with_parent(audiorate);
+        gst_element_sync_state_with_parent(convert);
+        gst_element_sync_state_with_parent(resample);
+        gst_element_sync_state_with_parent(sink);
+
+        nhlog::ui()->info("SFU: routed audio pad to dedicated sink (with SFrame decryption)");
         return;
     }
 
-    g_object_set(dec, "use-inband-fec", TRUE, "plc", TRUE, nullptr);
+    // TODO: Implement subscribing to video streams, currently dump into fake sink
+    nhlog::ui()->info("SFU: discarding non-audio pad (media={})", media ? media : "unknown");
 
-    gst_bin_add_many(GST_BIN(self->pipe_), queue, depay, dec, audiorate, convert, resample, sink, nullptr);
-
-    if (!gst_element_link_many(queue, depay, dec, audiorate, convert, resample, sink, nullptr)) {
-        nhlog::ui()->error("SFU: failed to link audio branch");
+    GstElement *fakesink = gst_element_factory_make("fakesink", nullptr);
+    if (!fakesink) {
+        nhlog::ui()->error("SFU: failed to create fakesink for non-audio pad");
         return;
     }
+    g_object_set(fakesink, "sync", FALSE, "async", FALSE, nullptr);
 
-    if (GstPad *depaySinkPad = gst_element_get_static_pad(depay, "sink")) {
-        gst_pad_add_probe(depaySinkPad, GST_PAD_PROBE_TYPE_BUFFER,
-                          sframeDecryptProbe, self, nullptr);
-        gst_object_unref(depaySinkPad);
-    } else {
-        nhlog::ui()->error("SFU: could not get depay sink pad for decrypt probe");
-    }
+    gst_bin_add(GST_BIN(self->pipe_), fakesink);
 
-    GstPad *queueSink = gst_element_get_static_pad(queue, "sink");
-    if (!queueSink || gst_pad_link(pad, queueSink) != GST_PAD_LINK_OK) {
-        nhlog::ui()->error("SFU: failed to link webrtc pad to queue");
-        if (queueSink) gst_object_unref(queueSink);
+    GstPad *sinkPad = gst_element_get_static_pad(fakesink, "sink");
+    if (!sinkPad || gst_pad_link(pad, sinkPad) != GST_PAD_LINK_OK) {
+        nhlog::ui()->error("SFU: failed to link non-audio pad to fakesink");
+        if (sinkPad) gst_object_unref(sinkPad);
+        gst_bin_remove(GST_BIN(self->pipe_), fakesink);
         return;
     }
-    gst_object_unref(queueSink);
-
-    gst_element_sync_state_with_parent(queue);
-    gst_element_sync_state_with_parent(depay);
-    gst_element_sync_state_with_parent(dec);
-    gst_element_sync_state_with_parent(audiorate);
-    gst_element_sync_state_with_parent(convert);
-    gst_element_sync_state_with_parent(resample);
-    gst_element_sync_state_with_parent(sink);
-
-    nhlog::ui()->info("SFU: routed audio pad to dedicated sink (with SFrame decryption)");
+    gst_object_unref(sinkPad);
+    gst_element_sync_state_with_parent(fakesink);
 }
 
 gboolean
@@ -830,6 +854,18 @@ GStreamerSFUSession::acceptRenegotiationOffer(const std::string &sdp)
         return false;
     }
 
+    // Build mid → media-type map NOW, before sdpMsg ownership is transferred.
+    std::unordered_map<std::string, std::string> midToMedia;
+    const guint mlineCount = gst_sdp_message_medias_len(sdpMsg);
+    for (guint m = 0; m < mlineCount; m++) {
+        const GstSDPMedia *media = gst_sdp_message_get_media(sdpMsg, m);
+        const char *mid          = gst_sdp_media_get_attribute_val(media, "mid");
+        const char *mediaType    = gst_sdp_media_get_media(media);
+        if (mid && mediaType)
+            midToMedia[mid] = mediaType;
+    }
+
+    // sdpMsg ownership passes to offer here — don't touch sdpMsg after this.
     GstWebRTCSessionDescription *offer =
         gst_webrtc_session_description_new(GST_WEBRTC_SDP_TYPE_OFFER, sdpMsg);
 
@@ -839,26 +875,43 @@ GStreamerSFUSession::acceptRenegotiationOffer(const std::string &sdp)
     gst_promise_unref(promise);
     gst_webrtc_session_description_free(offer);
 
-    GArray *transceivers = nullptr;
-    g_signal_emit_by_name(webrtc_, "get-transceivers", &transceivers);
-    GstCaps *caps =
+    GstCaps *audioCaps =
       gst_caps_from_string("application/x-rtp,media=audio,encoding-name=OPUS,payload=111;"
                            "application/x-rtp,media=audio,encoding-name=RED,payload=63");
+
+    GArray *transceivers = nullptr;
+    g_signal_emit_by_name(webrtc_, "get-transceivers", &transceivers);
     if (transceivers) {
         nhlog::ui()->info("SFU: {} transceivers after renegotiation offer", transceivers->len);
         for (guint i = 0; i < transceivers->len; i++) {
             GstWebRTCRTPTransceiver *trans =
               g_array_index(transceivers, GstWebRTCRTPTransceiver *, i);
+
+            gchar *mid = nullptr;
+            g_object_get(trans, "mid", &mid, nullptr);
+
+            std::string mediaType;
+            if (mid) {
+                auto it = midToMedia.find(mid);
+                if (it != midToMedia.end())
+                    mediaType = it->second;
+                g_free(mid);
+            }
+
             GstWebRTCRTPTransceiverDirection dir;
             g_object_get(trans, "direction", &dir, nullptr);
-            nhlog::ui()->info("SFU: transceiver {} direction: {}", i, static_cast<int>(dir));
-            g_object_set(
-              trans, "direction", GST_WEBRTC_RTP_TRANSCEIVER_DIRECTION_RECVONLY, nullptr);
-            g_object_set(trans, "codec-preferences", caps, nullptr);
+            nhlog::ui()->info("SFU: transceiver {} direction: {} media: {}",
+                              i, static_cast<int>(dir), mediaType.empty() ? "unknown" : mediaType);
+
+            g_object_set(trans, "direction",
+                         GST_WEBRTC_RTP_TRANSCEIVER_DIRECTION_RECVONLY, nullptr);
+
+            if (mediaType == "audio")
+                g_object_set(trans, "codec-preferences", audioCaps, nullptr);
         }
         g_array_unref(transceivers);
     }
-    gst_caps_unref(caps);
+    gst_caps_unref(audioCaps);
 
     GstPromise *answerPromise = gst_promise_new_with_change_func(onAnswerCreated, this, nullptr);
     g_signal_emit_by_name(webrtc_, "create-answer", nullptr, answerPromise);

@@ -416,7 +416,6 @@ void MatrixRTCSession::sendEncryptionKeyToUser(const std::string &matrixUserId,
     content.session.application       = "m.call";
     content.session.scope             = "m.room";
 
-    // Use "*" as device ID to reach all of the recipient's devices
     std::map<mtx::identifiers::User,
              std::map<std::string, mtx::events::msg::CallEncryptionKeys>> messages;
     messages[mtx::identifiers::parse<mtx::identifiers::User>(userId)][deviceId] = content;
