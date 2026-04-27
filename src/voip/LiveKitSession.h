@@ -5,6 +5,7 @@
 #include <QObject>
 #include <QTimer>
 #include <QWebSocket>
+#include <QQuickItem>
 #include <string>
 #include <vector>
 
@@ -45,6 +46,12 @@ public:
     GStreamerSFUSession *sfu_session() const { return sfuSession_; }
     bool isMicMuted() const { return micMuted_; }
 
+    void setVideoItem(QQuickItem *item) {
+        videoItem_ = item;
+        if (sfuSession_)
+            sfuSession_->setVideoItem(videoItem_);
+    }
+
 signals:
     void connected();
     void disconnected();
@@ -53,6 +60,8 @@ signals:
     void participantDisconnected(const QString &identity);
     void error(const QString &message);
     void publisherPipelineReady();
+    void participantStartedVideo(QString identity, QString sid);
+    void participantStoppedVideo(QString identity, QString sid);
 
 private slots:
     void onWebSocketConnected();
@@ -70,6 +79,8 @@ private:
     void handleTrickle(const livekit::TrickleRequest &trickle);
     void handleParticipantUpdate(const livekit::ParticipantUpdate &update);
     void handleTrackPublished(const livekit::TrackPublishedResponse &published);
+    void handleSpeakersChanged(const livekit::SpeakersChanged &changed);
+    void handleStreamStateUpdate(const livekit::StreamStateUpdate &update);
     void handleLeave(const livekit::LeaveRequest &leave);
     void sendAnswer(const std::string &sdp);
     void sendICECandidate(const std::string &candidate,
@@ -110,6 +121,10 @@ private:
 
     GStreamerSFUSession *sfuSession_ = nullptr;
     std::map<uint8_t, std::vector<uint8_t>> pendingDecryptionKeys_;
+
+    QQuickItem *videoItem_ = nullptr;
+
+    std::unordered_map<std::string, std::string> sidToIdentity_;
 };
 
 #endif // GSTREAMER_AVAILABLE

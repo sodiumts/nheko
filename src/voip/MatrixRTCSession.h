@@ -28,7 +28,9 @@ class MatrixRTCSession : public QObject {
     Q_PROPERTY(int callState READ callState NOTIFY callStateChanged)
     Q_PROPERTY(bool isMicMuted READ isMicMuted NOTIFY micMutedChanged)
     Q_PROPERTY(int callType READ callType CONSTANT)
-
+    Q_PROPERTY(bool isStreaming READ isStreaming NOTIFY isStreamingChanged)
+    Q_PROPERTY(QStringList participants READ participants NOTIFY participantsChanged)
+    Q_PROPERTY(QStringList streamingParticipants READ streamingParticipants NOTIFY streamingParticipantsChanged)
 public:
     static MatrixRTCSession *create(QQmlEngine *qmlEngine, QJSEngine *jsEngine);
     MatrixRTCSession(QObject *);
@@ -47,6 +49,7 @@ public:
 
     bool isActive() const { return isActive_; }
 
+    bool isStreaming() const { return isStreaming_; }
     void storePendingDecryptionKey(const uint8_t kid, const std::vector<uint8_t>& rawKey)
     {
         pendingDecryptionKeys_[kid] = rawKey;
@@ -65,6 +68,9 @@ public:
     int callState() const { return callState_;};
     bool isMicMuted() const { return livekitSession_ ? livekitSession_->isMicMuted() : false; }
     int callType() const { return static_cast<int>(webrtc::CallType::VOICE); }
+    QStringList participants() const { return participantsList_; }
+
+    QStringList streamingParticipants() const { return streamingParticipantsList_; }
 
 signals:
     void joined();
@@ -78,6 +84,11 @@ signals:
     void isOnCallChanged();
     void callStateChanged();
     void micMutedChanged();
+    void isStreamingChanged();
+
+    void participantsChanged();
+
+    void streamingParticipantsChanged();
 
 public slots:
     void startScreenShare(const QString &roomid, unsigned int windowIndex = 0);
@@ -110,12 +121,20 @@ private:
     std::optional<mtx::events::state::CallMember> findActiveCallMember(TimelineModel *timelineModel);
 
     std::set<std::string> activeParticipantUserIds_;
+
+    QStringList participantsList_;
+
     uint8_t currentEncKid_ = 0;
     std::vector<uint8_t> currentEncKeyMaterial_;
 
     int callState_ = static_cast<int>(webrtc::State::DISCONNECTED);
 
     QTimer keyRotationTimer_;
+
+    bool isStreaming_ = false;
+
+    std::vector<QString> streamingCurrently_;
+    QStringList streamingParticipantsList_;
 
     std::string roomId_;
     std::string userId_;

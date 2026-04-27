@@ -106,7 +106,7 @@ Item {
                 StackLayout {
                     id: stackLayout
 
-                    currentIndex: 0
+                    currentIndex: 0 
 
                     Connections {
                         function onRoomChanged() {
@@ -121,10 +121,17 @@ Item {
                         searchString: topBar.searchString
                         filterByNotifications: topBar.filterNotifications
                     }
-                    Loader {
-                        source: CallManager.isOnCall && CallManager.callType != Voip.VOICE ? (Qt.platform.os != "windows" ? "voip/VideoCall.qml" : "voip/VideoCallD3D11.qml") : ""
 
-                        onLoaded: TimelineManager.setVideoCallItem()
+                    //Loader {
+                    //    source: CallManager.isOnCall && CallManager.callType != Voip.VOICE ? (Qt.platform.os != "windows" ? "voip/VideoCall.qml" : "voip/VideoCallD3D11.qml") : ""
+                    //    onLoaded: TimelineManager.setVideoCallItem()
+                    //}
+                    Loader {
+                        id: callViewLoader
+                        active: MatrixRTCSession.isOnCall
+                        
+                        source: "voip/GroupCallParticipantsView.qml"
+                        property var room: timelineView.room
                     }
                 }
                 TypingIndicator {

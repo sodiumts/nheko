@@ -6,6 +6,7 @@
 #include "CallDevices.h"
 
 #include <QObject>
+#include <QQuickItem>
 #include <map>
 #include <shared_mutex>
 #include <string>
@@ -46,6 +47,8 @@ public:
     void setDecryptionKey(uint8_t kid, const std::vector<uint8_t>& rawKey);
 
     void setTrackCid(const std::string &cid) { trackCid_ = cid; }
+
+    void setVideoItem(QQuickItem *item) { videoItem_ = item; }
 
     std::vector<uint8_t> generateEncryptionKeyMaterial(uint8_t kid = 0);
 
@@ -98,8 +101,11 @@ private:
     static std::vector<uint8_t> deriveMediaKey(const std::vector<uint8_t>& rawKey);
     static GstPadProbeReturn sframeDecryptProbe(GstPad* pad, GstPadProbeInfo* info, gpointer user_data);
     static GstPadProbeReturn sframeEncryptProbe(GstPad *, GstPadProbeInfo *, gpointer);
+    static GstPadProbeReturn sframeVideoDecryptProbe(GstPad *pad,
+                                                  GstPadProbeInfo *info,
+                                                  gpointer user_data);
 
-    void createAnswer();
+      void createAnswer();
     void configureTurnServers() const;
     void configurePubTurnServers();
 
@@ -130,7 +136,11 @@ private:
     uint8_t currentEncKid_ = 0;
     std::atomic<uint64_t> encFrameCounter_{0};
 
+    GstElement *audioMixer_ = nullptr;
+    GstElement *audioSink_ = nullptr;
 
+    QQuickItem *videoItem_ = nullptr;
+    GstElement *videoSink_ = nullptr; 
 
     CallDevices &devices_;
 };

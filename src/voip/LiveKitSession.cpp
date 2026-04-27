@@ -162,14 +162,7 @@ LiveKitSession::onBinaryMessageReceived(const QByteArray &message)
         handleLeave(response.leave());
         break;
     case livekit::SignalResponse::kSpeakersChanged: {
-        for (const auto &speakers = response.speakers_changed().speakers();
-             const auto &speaker : speakers) {
-            nhlog::net()->debug("Speaker changed: sid={}, level={}, active={}",
-                                speaker.sid(),
-                                speaker.level(),
-                                speaker.active());
-        }
-
+        handleSpeakersChanged(response.speakers_changed());
         break;
     }
     case livekit::SignalResponse::kSubscriptionPermissionUpdate: {
@@ -182,10 +175,53 @@ LiveKitSession::onBinaryMessageReceived(const QByteArray &message)
     case livekit::SignalResponse::kPongResp:
         nhlog::net()->debug("LiveKit: pong response");
         break;
+    case livekit::SignalResponse::kStreamStateUpdate:
+        handleStreamStateUpdate(response.stream_state_update());
+        break;
     default:
         nhlog::net()->debug("LiveKit: unhandled message type {}",
                             static_cast<int>(response.message_case()));
         break;
+    }
+}
+     
+void 
+LiveKitSession::handleStreamStateUpdate(const livekit::StreamStateUpdate &update) {
+    for (const auto &streamInfo : update.stream_states()) {
+        std::string participantSid = streamInfo.participant_sid();
+        std::string trackSid = streamInfo.track_sid();
+        auto state = streamInfo.state();
+
+        std::string identity = "(unknown)";
+        if (auto it = sidToIdentity_.find(participantSid); it != sidToIdentity_.end())
+            identity = it->second;
+
+        nhlog::net()->info("LiveKit: stream state update - participant={}, track={}, state={}",
+                           identity,
+                           trackSid,
+                           (state == livekit::StreamState::ACTIVE ? "ACTIVE" : "PAUSED"));
+
+        if (state == livekit::StreamState::PAUSED) {
+            emit participantStoppedVideo(QString::fromStdString(identity),
+                                         QString::fromStdString(trackSid));
+        } else if (state == livekit::StreamState::ACTIVE) {
+            emit participantStartedVideo(QString::fromStdString(identity),
+                                         QString::fromStdString(trackSid));
+        }
+    }
+}
+
+void
+LiveKitSession::handleSpeakersChanged(const livekit::SpeakersChanged &changed)
+{
+    for (const auto &speakers = changed.speakers(); const auto &speaker : speakers) {
+        auto it              = sidToIdentity_.find(speaker.sid());
+        std::string identity = (it != sidToIdentity_.end() ? it->second : "(unknown)");
+        nhlog::net()->debug("Speaker changed: sid={}, iden={}, level={}, active={}",
+                            speaker.sid(),
+                            identity,
+                            speaker.level(),
+                            speaker.active());
     }
 }
 
@@ -206,7 +242,15 @@ LiveKitSession::handleJoin(const livekit::JoinResponse &join)
 
     for (const auto &p : join.other_participants()) {
         nhlog::net()->info("LiveKit: existing participant: {}", p.identity());
+        sidToIdentity_[p.sid()] = p.identity();
         emit participantConnected(QString::fromStdString(p.identity()));
+
+        for (const auto &track : p.tracks()) {
+            if (track.type() == livekit::TrackType::VIDEO && !track.muted()) {
+                emit participantStartedVideo(QString::fromStdString(p.identity()),
+                                             QString::fromStdString(track.sid()));
+            }
+        }
     }
 
     setState(State::Connected);
@@ -249,6 +293,9 @@ LiveKitSession::handleOffer(const livekit::SessionDescription &offer)
     if (!sfuSession_) {
         sfuSession_ = new GStreamerSFUSession(this);
 
+        if(videoItem_)
+            sfuSession_->setVideoItem(videoItem_);
+
         QObject::connect(sfuSession_,
                          &GStreamerSFUSession::subscriberAnswerCreated,
                          this,
@@ -280,7 +327,7 @@ LiveKitSession::handleOffer(const livekit::SessionDescription &offer)
               this, &LiveKitSession::publishMicrophone, Qt::QueuedConnection);
         }
     } else {
-        nhlog::net()->info("LiveKit: renegotiation offer received");
+        nhlog::net()->info("LiveKit: renegotiation offer received");        
         if (!sfuSession_->acceptRenegotiationOffer(offer.sdp()))
             emit error(QStringLiteral("Failed to accept renegotiation offer"));
     }
@@ -335,10 +382,21 @@ LiveKitSession::handleParticipantUpdate(const livekit::ParticipantUpdate &update
         if (p.identity() == localParticipantIdentity_)
             continue;
 
-        if (p.state() == livekit::ParticipantInfo_State_ACTIVE)
+        sidToIdentity_[p.sid()] = p.identity();
+
+        if (p.state() == livekit::ParticipantInfo_State_ACTIVE) {
             emit participantConnected(QString::fromStdString(p.identity()));
-        else if (p.state() == livekit::ParticipantInfo_State_DISCONNECTED)
+
+            for (const auto &track : p.tracks()) {
+                if (track.type() == livekit::TrackType::VIDEO && !track.muted()) {
+                    emit participantStartedVideo(QString::fromStdString(p.identity()), QString::fromStdString(p.sid()));
+                }
+            }
+        }
+        else if (p.state() == livekit::ParticipantInfo_State_DISCONNECTED) {
+            sidToIdentity_.erase(p.sid());
             emit participantDisconnected(QString::fromStdString(p.identity()));
+        }
     }
 }
 
@@ -366,7 +424,6 @@ void
 LiveKitSession::publishMicrophone()
 {
     if (!sfuSession_) {
-        // Subscriber offer hasn't arrived yet — set flag, retry after sfuSession_ is created
         nhlog::net()->info("LiveKit: publishMicrophone deferred (sfuSession not ready yet)");
         wantToPublish_ = true;
         return;

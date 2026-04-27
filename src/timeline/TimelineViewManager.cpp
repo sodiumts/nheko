@@ -268,6 +268,21 @@ TimelineViewManager::setVideoCallItem()
     WebRTCSession::instance().setVideoItem(
       MainWindow::instance()->rootObject()->findChild<QQuickItem *>(
         QStringLiteral("videoCallItem")));
+
+    auto *livekit = ChatPage::instance()->matrixRTC()->livekitSession();
+    if (!livekit) {
+        nhlog::ui()->warn("setVideoCallItem: no active LiveKit session");
+        return;
+    }
+
+    auto *item = MainWindow::instance()->rootObject()->findChild<QQuickItem *>(
+        QStringLiteral("videoCallItem"));
+    if (!item) {
+        nhlog::ui()->warn("setVideoCallItem: videoCallItem not found in QML");
+        return;
+    }
+
+    livekit->setVideoItem(item);
 }
 
 void

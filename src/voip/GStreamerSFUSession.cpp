@@ -37,6 +37,8 @@ GStreamerSFUSession::end()
         gst_object_unref(pipe_);
         pipe_   = nullptr;
         webrtc_ = nullptr;
+        audioMixer_ = nullptr;
+        audioSink_ = nullptr;
     }
     if (busWatchId_) {
         g_source_remove(busWatchId_);
@@ -205,6 +207,89 @@ GStreamerSFUSession::deriveMediaKey(const std::vector<uint8_t> &rawKey)
         return {};
 
     return out;
+}
+
+GstPadProbeReturn
+GStreamerSFUSession::sframeVideoDecryptProbe([[maybe_unused]] GstPad *pad,
+                                              GstPadProbeInfo *info,
+                                              const gpointer user_data)
+{
+    const auto *self = static_cast<GStreamerSFUSession *>(user_data);
+
+    GstBuffer *buf = gst_buffer_make_writable(GST_PAD_PROBE_INFO_BUFFER(info));
+    GST_PAD_PROBE_INFO_DATA(info) = buf;
+
+    GstMapInfo map;
+    if (!gst_buffer_map(buf, &map, GST_MAP_READWRITE))
+        return GST_PAD_PROBE_OK;
+
+    const size_t size = map.size;
+    uint8_t *data = map.data;
+
+    if (size < 2 + 12 + 16) {
+        gst_buffer_unmap(buf, &map);
+        return GST_PAD_PROBE_OK;
+    }
+
+    uint8_t kid      = data[size - 1];
+    uint8_t ivLength = data[size - 2];
+
+    if (ivLength != 12) {
+        gst_buffer_unmap(buf, &map);
+        return GST_PAD_PROBE_OK;
+    }
+
+    const bool isKeyframe = !(data[0] & 0x01);
+    const size_t unencryptedBytes = isKeyframe ? 10 : 3;
+
+    if (size < unencryptedBytes + 2 + 12 + 16) {
+        gst_buffer_unmap(buf, &map);
+        return GST_PAD_PROBE_OK;
+    }
+
+    const uint8_t *iv          = data + size - 2 - ivLength;
+    const uint8_t *ciphertext  = data + unencryptedBytes;
+    const size_t  ciphertextLen = size - unencryptedBytes - ivLength - 2;
+
+    if (ciphertextLen < 16) {
+        gst_buffer_unmap(buf, &map);
+        return GST_PAD_PROBE_OK;
+    }
+
+    const std::vector<uint8_t> key = self->getDecryptionKey(kid);
+    if (key.empty()) {
+        nhlog::ui()->warn("SFU video: no decryption key for KID {} — dropping", kid);
+        gst_buffer_unmap(buf, &map);
+        return GST_PAD_PROBE_DROP;
+    }
+
+    const size_t tagOffset = ciphertextLen - 16;
+    std::vector<uint8_t> plaintext(tagOffset);
+    int decLen = 0, finalLen = 0;
+
+    EVP_CIPHER_CTX *ctx = EVP_CIPHER_CTX_new();
+    EVP_DecryptInit_ex(ctx, EVP_aes_128_gcm(), nullptr, nullptr, nullptr);
+    EVP_CIPHER_CTX_ctrl(ctx, EVP_CTRL_GCM_SET_IVLEN, 12, nullptr);
+    EVP_DecryptInit_ex(ctx, nullptr, nullptr, key.data(), iv);
+    EVP_DecryptUpdate(ctx, nullptr, &decLen, data, static_cast<int>(unencryptedBytes));
+    EVP_DecryptUpdate(ctx, plaintext.data(), &decLen, ciphertext, static_cast<int>(tagOffset));
+    EVP_CIPHER_CTX_ctrl(ctx, EVP_CTRL_GCM_SET_TAG, 16,
+                        const_cast<uint8_t *>(ciphertext + tagOffset));
+    const int authOk = EVP_DecryptFinal_ex(ctx, plaintext.data() + decLen, &finalLen);
+    EVP_CIPHER_CTX_free(ctx);
+
+    if (authOk <= 0) {
+        nhlog::ui()->warn("SFU video: AES-GCM auth failed KID={} isKeyframe={}", kid, isKeyframe);
+        gst_buffer_unmap(buf, &map);
+        return GST_PAD_PROBE_DROP;
+    }
+
+    const size_t plaintextLen = static_cast<size_t>(decLen + finalLen);
+    memcpy(data + unencryptedBytes, plaintext.data(), plaintextLen);
+    gst_buffer_unmap(buf, &map);
+    gst_buffer_resize(buf, 0, static_cast<gssize>(unencryptedBytes + plaintextLen));
+
+    return GST_PAD_PROBE_OK;
 }
 
 GstPadProbeReturn
@@ -454,6 +539,23 @@ GStreamerSFUSession::initSubscriber(const std::string &sdp)
     g_object_get(webrtc_, "latency", &actualLatency, nullptr);
     nhlog::ui()->info("SFU: webrtcbin jitter buffer latency = {}ms", actualLatency);
 
+    audioMixer_ = gst_element_factory_make("audiomixer", "audiomixer");
+    audioSink_ = gst_element_factory_make("autoaudiosink", "audioout");
+
+    if(!audioMixer_ || !audioSink_) {
+        nhlog::ui()->error("SFU: failed to create audiomixer or autoaudiosink");
+        gst_object_unref(pipe_);
+        pipe_ = nullptr;
+        gst_webrtc_session_description_free(offer);
+        return false;
+    }
+
+    gst_bin_add_many(GST_BIN(pipe_), audioMixer_, audioSink_, nullptr);
+    if (!gst_element_link(audioMixer_, audioSink_)) {
+        nhlog::ui()->error("SFU: failed to link audiomixer -> autoaudiosink");
+        end();
+        return false;
+    }
 
     configureTurnServers();
 
@@ -732,19 +834,23 @@ GStreamerSFUSession::onPadAdded(GstElement *, GstPad *pad, const gpointer user_d
     const char *encoding  = gst_structure_get_string(s, "encoding-name");
     gst_caps_unref(caps);
 
-    // audio subscription
+    // for audio subscribing
     if (media && g_strcmp0(media, "audio") == 0 &&
         (!encoding || g_ascii_strcasecmp(encoding, "OPUS") == 0))
     {
+        if (!self->audioMixer_) {
+            nhlog::ui()->error("SFU: audio pad arrived but audiomixer not initialized");
+            return;
+        }
+
         GstElement *queue     = gst_element_factory_make("queue",         nullptr);
         GstElement *depay     = gst_element_factory_make("rtpopusdepay",  nullptr);
         GstElement *dec       = gst_element_factory_make("opusdec",       nullptr);
         GstElement *audiorate = gst_element_factory_make("audiorate",     nullptr);
         GstElement *convert   = gst_element_factory_make("audioconvert",  nullptr);
         GstElement *resample  = gst_element_factory_make("audioresample", nullptr);
-        GstElement *sink      = gst_element_factory_make("autoaudiosink", nullptr);
 
-        if (!queue || !depay || !dec || !convert || !resample || !sink) {
+        if (!queue || !depay || !dec || !audiorate || !convert || !resample) {
             nhlog::ui()->error("SFU: failed to create audio branch elements");
             return;
         }
@@ -752,20 +858,37 @@ GStreamerSFUSession::onPadAdded(GstElement *, GstPad *pad, const gpointer user_d
         g_object_set(dec, "use-inband-fec", TRUE, "plc", TRUE, nullptr);
 
         gst_bin_add_many(GST_BIN(self->pipe_),
-                         queue, depay, dec, audiorate, convert, resample, sink, nullptr);
+                         queue, depay, dec, audiorate, convert, resample, nullptr);
 
-        if (!gst_element_link_many(queue, depay, dec, audiorate, convert, resample, sink, nullptr)) {
+        if (!gst_element_link_many(queue, depay, dec, audiorate, convert, resample, nullptr)) {
             nhlog::ui()->error("SFU: failed to link audio branch");
             return;
         }
 
-        if (GstPad *depaySinkPad = gst_element_get_static_pad(depay, "sink")) {
+        GstPad *depaySinkPad = gst_element_get_static_pad(depay, "sink");
+        if (depaySinkPad) {
             gst_pad_add_probe(depaySinkPad, GST_PAD_PROBE_TYPE_BUFFER,
                               sframeDecryptProbe, self, nullptr);
             gst_object_unref(depaySinkPad);
         } else {
             nhlog::ui()->error("SFU: could not get depay sink pad for decrypt probe");
+        } 
+
+        GstPad *mixerSinkPad = gst_element_request_pad_simple(self->audioMixer_, "sink_%u");
+        if (!mixerSinkPad) {
+            nhlog::ui()->error("SFU: failed to request audiomixer sink pad");
+            return;
         }
+
+        GstPad *resampleSrc = gst_element_get_static_pad(resample, "src");
+        if (!resampleSrc || gst_pad_link(resampleSrc, mixerSinkPad) != GST_PAD_LINK_OK) {
+            nhlog::ui()->error("SFU: failed to link resample -> audiomixer");
+            if (resampleSrc) gst_object_unref(resampleSrc);
+            gst_object_unref(mixerSinkPad);
+            return;
+        }
+        gst_object_unref(resampleSrc);
+        gst_object_unref(mixerSinkPad);
 
         GstPad *queueSink = gst_element_get_static_pad(queue, "sink");
         if (!queueSink || gst_pad_link(pad, queueSink) != GST_PAD_LINK_OK) {
@@ -781,13 +904,89 @@ GStreamerSFUSession::onPadAdded(GstElement *, GstPad *pad, const gpointer user_d
         gst_element_sync_state_with_parent(audiorate);
         gst_element_sync_state_with_parent(convert);
         gst_element_sync_state_with_parent(resample);
-        gst_element_sync_state_with_parent(sink);
 
-        nhlog::ui()->info("SFU: routed audio pad to dedicated sink (with SFrame decryption)");
+        nhlog::ui()->info("SFU: routed audio pad to audiomixer (with SFrame decryption)");
         return;
     }
 
-    // TODO: Implement subscribing to video streams, currently dump into fake sink
+    // TODO: implement multi stream watching
+    if (media && g_strcmp0(media, "video") == 0) {
+        if (self->videoItem_) {
+            GstElement *queue   = gst_element_factory_make("queue", nullptr);
+            GstElement *depay   = gst_element_factory_make("rtpvp8depay", nullptr);
+            GstElement *dec     = gst_element_factory_make("vp8dec", nullptr);
+            GstElement *convert = gst_element_factory_make("videoconvert", nullptr);
+            GstElement *upload  = gst_element_factory_make("glupload", nullptr);
+            GstElement *sink = gst_element_factory_make("qml6glsink", nullptr);
+
+            if (queue && depay && dec && convert && upload && sink) {
+                g_object_set(sink, "widget", self->videoItem_, nullptr);
+                self->videoSink_ = sink;
+
+                gst_bin_add_many(
+                  GST_BIN(self->pipe_), queue, depay, dec, convert, upload, sink, nullptr);
+
+                if (gst_element_link_many(queue, depay, dec, convert, upload, sink, nullptr)) {
+                    GstPad *decSinkPad = gst_element_get_static_pad(dec, "sink");
+                    if (decSinkPad) {
+                        gst_pad_add_probe(decSinkPad,
+                                          GST_PAD_PROBE_TYPE_BUFFER,
+                                          sframeVideoDecryptProbe,
+                                          self,
+                                          nullptr);
+                        gst_object_unref(decSinkPad);
+                    }
+
+                    GstPad *queueSink = gst_element_get_static_pad(queue, "sink");
+                    if (queueSink && gst_pad_link(pad, queueSink) == GST_PAD_LINK_OK) {
+                        gst_object_unref(queueSink);
+                        gst_element_sync_state_with_parent(queue);
+                        gst_element_sync_state_with_parent(depay);
+                        gst_element_sync_state_with_parent(dec);
+                        gst_element_sync_state_with_parent(convert);
+                        gst_element_sync_state_with_parent(upload);
+                        gst_element_sync_state_with_parent(sink);
+                        nhlog::ui()->info("SFU: routed video pad to qml6glsink");
+                        return;
+                    }
+                    if (queueSink)
+                        gst_object_unref(queueSink);
+                }
+
+                nhlog::ui()->error("SFU: failed to link video branch, falling back to fakesink");
+                gst_element_set_state(sink, GST_STATE_NULL);
+                gst_element_set_state(upload, GST_STATE_NULL);
+                gst_element_set_state(convert, GST_STATE_NULL);
+                gst_element_set_state(dec, GST_STATE_NULL);
+                gst_element_set_state(depay, GST_STATE_NULL);
+                gst_element_set_state(queue, GST_STATE_NULL);
+                gst_bin_remove(GST_BIN(self->pipe_), sink);
+                gst_bin_remove(GST_BIN(self->pipe_), upload);
+                gst_bin_remove(GST_BIN(self->pipe_), convert);
+                gst_bin_remove(GST_BIN(self->pipe_), dec);
+                gst_bin_remove(GST_BIN(self->pipe_), depay);
+                gst_bin_remove(GST_BIN(self->pipe_), queue);
+            } else {
+                nhlog::ui()->error(
+                  "SFU: failed to create video branch elements, falling back to fakesink");
+                if (queue)
+                    gst_object_unref(queue);
+                if (depay)
+                    gst_object_unref(depay);
+                if (dec)
+                    gst_object_unref(dec);
+                if (convert)
+                    gst_object_unref(convert);
+                if (upload)
+                    gst_object_unref(upload);
+                if (sink)
+                    gst_object_unref(sink);
+            }
+        } else {
+            nhlog::ui()->warn("SFU: video pad arrived but no videoItem set, using fakesink");
+        }
+    }
+
     nhlog::ui()->info("SFU: discarding non-audio pad (media={})", media ? media : "unknown");
 
     GstElement *fakesink = gst_element_factory_make("fakesink", nullptr);
@@ -796,7 +995,6 @@ GStreamerSFUSession::onPadAdded(GstElement *, GstPad *pad, const gpointer user_d
         return;
     }
     g_object_set(fakesink, "sync", FALSE, "async", FALSE, nullptr);
-
     gst_bin_add(GST_BIN(self->pipe_), fakesink);
 
     GstPad *sinkPad = gst_element_get_static_pad(fakesink, "sink");
@@ -999,8 +1197,6 @@ GStreamerSFUSession::initPublisher()
         endPublisher();
         return false;
     }
-
-
 
     publisherSsrc_ = g_random_int();
 

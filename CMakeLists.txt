@@ -866,6 +866,7 @@ set(QML_SOURCES
     resources/qml/voip/GroupScreen.qml
     resources/qml/voip/VideoCall.qml
     resources/qml/voip/VideoCallD3D11.qml
+    resources/qml/voip/GroupCallParticipantsView.qml
     resources/qml/delegates/EncryptionEnabled.qml
     resources/qml/ui/TimelineEffects.qml
 )

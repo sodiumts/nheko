@@ -12,6 +12,7 @@
 #include "ScreenCastPortal.h"
 #include "TimelineModel.h"
 #include "UserSettingsPage.h"
+#include "timeline/TimelineViewManager.h"
 
 #include <QRandomGenerator>
 #include <mtx/responses/well-known.hpp>
@@ -69,6 +70,10 @@ void MatrixRTCSession::requestLiveKitJWT(const mtx::responses::MatrixOpenidToken
         connect(nam_, &QNetworkAccessManager::finished, this, &MatrixRTCSession::onCredentialsReceived);
     }
 
+    // implement livekit/jwt/get_token
+    // With getting other track members linked up with the participant hashes as 
+    // described in https://github.com/hughns/matrix-spec-proposals/blob/cd797a9e5923a2eb52c8789783054a3975b168c1/proposals/4195-matrixrtc-livekit.md#pseudonymous-livekit-participant-identity
+    // though have to wait until element also implements it before fully migrating.
     std::string livekitUrlString = livekitEndpoint_ + "/sfu/get";
 
     const QUrl url(livekitUrlString.c_str());
@@ -209,6 +214,8 @@ void MatrixRTCSession::onCredentialsReceived(QNetworkReply *reply)
 
     livekitSession_ = new LiveKitSession(this);
 
+    ChatPage::instance()->timelineManager()->setVideoCallItem();
+
     for (auto& [k, v]: pendingDecryptionKeys_) {
         livekitSession_->setDecryptionKey(k, v);
     }
@@ -223,6 +230,10 @@ void MatrixRTCSession::onCredentialsReceived(QNetworkReply *reply)
             [this](const QString &identity) {
                 const std::string userId = identity.toStdString();
                 activeParticipantUserIds_.insert(userId);
+                if (!participantsList_.contains(identity))
+                    participantsList_.append(identity);
+
+                emit participantsChanged();
 
                 if (!currentEncKeyMaterial_.empty())
                     sendEncryptionKeyToUser(userId, currentEncKid_, currentEncKeyMaterial_);
@@ -234,8 +245,31 @@ void MatrixRTCSession::onCredentialsReceived(QNetworkReply *reply)
             this,
             [this](const QString &identity) {
                 activeParticipantUserIds_.erase(identity.toStdString());
+                
+                participantsList_.removeOne(identity);
+                emit participantsChanged();
+
                 emit participantLeft(identity);
             });
+
+    connect(livekitSession_, &LiveKitSession::participantStartedVideo, this, [this](const QString &identity, const QString &sid) {
+        nhlog::ui()->info("user={} started streaming", identity.toStdString());
+        streamingCurrently_.push_back(identity);
+
+        if (!isStreaming_ && !streamingCurrently_.empty()) {
+            isStreaming_ = true;
+            emit isStreamingChanged();
+        }
+    });
+    connect(livekitSession_, &LiveKitSession::participantStoppedVideo, this, [this](const QString &identity, const QString &sid) {
+        nhlog::ui()->info("user={} stopped streaming", identity.toStdString());
+        std::erase(streamingCurrently_, identity);
+
+        if (isStreaming_ && streamingCurrently_.empty()) {
+            isStreaming_ = false;
+            emit isStreamingChanged();
+        }
+    });
 
 
     if (!turnServers_.uris.empty()) {
@@ -251,8 +285,9 @@ void MatrixRTCSession::leave()
     emit isOnCallChanged();
     setCallState(static_cast<int>(webrtc::State::DISCONNECTED));
     membershipRefreshTimer_.stop();
-    //keyRotationTimer_.stop();
+    keyRotationTimer_.stop();
     activeParticipantUserIds_.clear();
+    participantsList_.clear();
     currentEncKeyMaterial_.clear();
     sendMembershipEvent(true);
 
@@ -279,6 +314,9 @@ void MatrixRTCSession::refreshMembership()
 void MatrixRTCSession::onLiveKitConnected()
 {
     nhlog::ui()->info("MatrixRTC: connected to LiveKit");
+    if (!participantsList_.contains(userId_))
+        participantsList_.append(QString::fromStdString(userId_));
+    emit participantsChanged();
     setCallState(static_cast<int>(webrtc::State::CONNECTED));
     emit joined();
     publishMicrophone();
@@ -333,7 +371,7 @@ void MatrixRTCSession::publishMicrophone()
           //keyRotationTimer_.start();
       },
       Qt::SingleShotConnection);
-}
+    }
 void
 MatrixRTCSession::shareScreen()
 {

@@ -13,6 +13,13 @@ Rectangle {
         
     property string elapsedTime: "00:00"
 
+    MouseArea {
+        anchors.fill: parent
+        onClicked: {
+            stackLayout.currentIndex = stackLayout.currentIndex ? 0 : 1;
+        }
+    }
+
     RowLayout {
         id: rowLayout
 
