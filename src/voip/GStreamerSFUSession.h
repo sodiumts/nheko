@@ -52,6 +52,8 @@ public:
 
     std::vector<uint8_t> generateEncryptionKeyMaterial(uint8_t kid = 0);
 
+    void setStreamVolume(const std::string &padName, double volume);
+
 
 signals:
     void subscriberAnswerCreated(const std::string& sdp);
@@ -67,6 +69,8 @@ signals:
     void stateChanged(const QString& state);
     void failed(const QString& reason);
     void publisherPipelineReady();
+
+    void audioStreamAdded(const std::string &padName);
 
 private:
     static void onICECandidate(GstElement* webrtc,
@@ -105,7 +109,7 @@ private:
                                                   GstPadProbeInfo *info,
                                                   gpointer user_data);
 
-      void createAnswer();
+    void createAnswer();
     void configureTurnServers() const;
     void configurePubTurnServers();
 
@@ -143,6 +147,8 @@ private:
     GstElement *videoSink_ = nullptr; 
 
     CallDevices &devices_;
+
+    std::map<std::string, GstElement*> audioVolumeElements_;
 };
 
 #endif // GSTREAMER_AVAILABLE

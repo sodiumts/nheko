@@ -846,21 +846,25 @@ GStreamerSFUSession::onPadAdded(GstElement *, GstPad *pad, const gpointer user_d
         GstElement *queue     = gst_element_factory_make("queue",         nullptr);
         GstElement *depay     = gst_element_factory_make("rtpopusdepay",  nullptr);
         GstElement *dec       = gst_element_factory_make("opusdec",       nullptr);
+        GstElement *vol       = gst_element_factory_make("volume", nullptr);
         GstElement *audiorate = gst_element_factory_make("audiorate",     nullptr);
         GstElement *convert   = gst_element_factory_make("audioconvert",  nullptr);
         GstElement *resample  = gst_element_factory_make("audioresample", nullptr);
 
-        if (!queue || !depay || !dec || !audiorate || !convert || !resample) {
+        if (!queue || !depay || !dec || !vol || !audiorate || !convert || !resample) {
             nhlog::ui()->error("SFU: failed to create audio branch elements");
             return;
         }
 
+        std::string padName = gst_pad_get_name(pad);
+        self->audioVolumeElements_[padName] = vol;
+
         g_object_set(dec, "use-inband-fec", TRUE, "plc", TRUE, nullptr);
 
         gst_bin_add_many(GST_BIN(self->pipe_),
-                         queue, depay, dec, audiorate, convert, resample, nullptr);
+                         queue, depay, dec, vol, audiorate, convert, resample, nullptr);
 
-        if (!gst_element_link_many(queue, depay, dec, audiorate, convert, resample, nullptr)) {
+        if (!gst_element_link_many(queue, depay, dec, vol, audiorate, convert, resample, nullptr)) {
             nhlog::ui()->error("SFU: failed to link audio branch");
             return;
         }
@@ -901,11 +905,17 @@ GStreamerSFUSession::onPadAdded(GstElement *, GstPad *pad, const gpointer user_d
         gst_element_sync_state_with_parent(queue);
         gst_element_sync_state_with_parent(depay);
         gst_element_sync_state_with_parent(dec);
+        gst_element_sync_state_with_parent(vol);
         gst_element_sync_state_with_parent(audiorate);
         gst_element_sync_state_with_parent(convert);
         gst_element_sync_state_with_parent(resample);
 
         nhlog::ui()->info("SFU: routed audio pad to audiomixer (with SFrame decryption)");
+
+        QMetaObject::invokeMethod(self, [self, padName]() {
+            emit self->audioStreamAdded(padName);
+        }, Qt::QueuedConnection);
+
         return;
     }
 
@@ -1376,5 +1386,16 @@ GStreamerSFUSession::configurePubTurnServers()
     }
 }
 
+void 
+GStreamerSFUSession::setStreamVolume(const std::string &padName, double volume) {
+    auto it = audioVolumeElements_.find(padName);
+    if (it == audioVolumeElements_.end()) {
+        nhlog::ui()->warn("SFU: no volume element found for pad '{}'", padName);
+        return;
+    }
+
+    g_object_set(it->second, "volume", volume, nullptr);
+    nhlog::ui()->info("SFU: set volume for pad '{}' to {:.2f}", padName, volume);
+}
 #endif // GSTREAMER_AVAILABLE
 

@@ -36,6 +36,8 @@ public:
     MatrixRTCSession(QObject *);
 
     LiveKitSession* livekitSession() const { return livekitSession_; }
+    
+    Q_INVOKABLE void setParticipantVolume(const QString &identity, double volume);
 
     void publishMicrophone();
 

@@ -303,6 +303,21 @@ LiveKitSession::handleOffer(const livekit::SessionDescription &offer)
 
         QObject::connect(
           sfuSession_,
+          &GStreamerSFUSession::audioStreamAdded,
+          this,
+          [this](const std::string &padName) {
+              for (auto &[sid, identity] : sidToIdentity_) {
+                  if (identityToPadName_.find(identity) == identityToPadName_.end()) {
+                      identityToPadName_[identity] = padName;
+                      nhlog::net()->info(
+                        "LiveKit: mapped identity '{}' to pad '{}'", identity, padName);
+                      break;
+                  }
+              }
+          });
+
+        QObject::connect(
+          sfuSession_,
           &GStreamerSFUSession::subscriberICECandidate,
           this,
           [this](const std::string &candidate, const std::string &sdpMid, const int sdpMLineIndex) {
@@ -575,6 +590,20 @@ LiveKitSession::flushPendingDecryptionKeys()
         sfuSession_->setDecryptionKey(kid, rawKey);
     }
     pendingDecryptionKeys_.clear();
+}
+    
+void 
+LiveKitSession::setParticipantVolume(const QString &identity, double volume) {
+    if(!sfuSession_) return;
+    auto it = identityToPadName_.find(identity.toStdString());
+    if (it == identityToPadName_.end()) {
+        nhlog::net()->warn("LiveKit: no pad found for identity '{}'",
+                           identity.toStdString());
+        return;
+    }    
+
+    nhlog::net()->info("set volume for {} to {}", identity.toStdString(), volume);
+    sfuSession_->setStreamVolume(it->second, volume);
 }
 
 void

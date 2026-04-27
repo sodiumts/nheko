@@ -52,6 +52,8 @@ public:
             sfuSession_->setVideoItem(videoItem_);
     }
 
+    void setParticipantVolume(const QString &identity, double volume);
+
 signals:
     void connected();
     void disconnected();
@@ -125,6 +127,8 @@ private:
     QQuickItem *videoItem_ = nullptr;
 
     std::unordered_map<std::string, std::string> sidToIdentity_;
+
+    std::map<std::string, std::string> identityToPadName_;
 };
 
 #endif // GSTREAMER_AVAILABLE

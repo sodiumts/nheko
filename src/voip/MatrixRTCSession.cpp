@@ -64,6 +64,15 @@ void MatrixRTCSession::fetchOpenidToken() {
             }, Qt::QueuedConnection);
         });
 }
+
+void MatrixRTCSession::setParticipantVolume(const QString &identity, double volume) {
+    nhlog::net()->info("MatrixRTCSession: setParticipantVolume identity={} volume={}",
+                       identity.toStdString(),
+                       volume);
+    if (!livekitSession_) return;
+
+    livekitSession_->setParticipantVolume(identity, volume);
+}
 void MatrixRTCSession::requestLiveKitJWT(const mtx::responses::MatrixOpenidToken &openIDToken) {
     if (!nam_) {
         nam_ = new QNetworkAccessManager(this);
