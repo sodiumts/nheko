@@ -205,6 +205,32 @@ handle_to_device_messages(const std::vector<mtx::events::collections::DeviceEven
         } else if (auto e =
                      std::get_if<mtx::events::DeviceEvent<mtx::events::msg::SecretRequest>>(&msg)) {
             handle_secret_request(e, e->sender);
+        } else if (auto callKeys = std::get_if<mtx::events::DeviceEvent<mtx::events::msg::CallEncryptionKeys>>(&msg)) {
+            const auto &content = callKeys->content;
+            nhlog::crypto()->info("CallEncryptionKeys from {} KID={} device={}",
+                callKeys->sender, content.keys.index, content.member.claimed_device_id);
+
+            auto raw = QByteArray::fromBase64(QByteArray::fromStdString(content.keys.key));
+            if (raw.size() != 16) {
+                nhlog::crypto()->error("RTC: unexpected key length {}, dropping", raw.size());
+            } else {
+                const uint8_t kid = static_cast<uint8_t>(content.keys.index);
+                std::vector<uint8_t> keyVec(raw.begin(), raw.end());
+
+                auto *rtc = ChatPage::instance()->matrixRTC();
+                if (rtc) {
+                    if (auto *lk = rtc->livekitSession()) {
+                        lk->setDecryptionKey(kid, keyVec);
+                        rtc->addUsedKID(kid);
+                    } else {
+                        rtc->storePendingDecryptionKey(kid, keyVec);
+                        rtc->addUsedKID(kid);
+                    }
+                    nhlog::crypto()->info("RTC: registered KID={} from={}", kid, callKeys->sender);
+                } else {
+                    nhlog::crypto()->warn("RTC: no matrix RTC session available");
+                }
+            }
         } else {
             nhlog::crypto()->warn("unhandled event: {}", j_msg.dump(2));
         }
