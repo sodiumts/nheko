@@ -106,18 +106,33 @@ Item {
                 StackLayout {
                     id: stackLayout
 
-                    currentIndex: 0 
+                    currentIndex: MatrixRTCSession.isOnCall ? 1 : 0
+
+                    Layout.fillWidth: true
+                    Layout.fillHeight: true
 
                     Connections {
                         function onRoomChanged() {
-                            stackLayout.currentIndex = 0;
+                            if (!MatrixRTCSession.isOnCall)
+                                stackLayout.currentIndex = 0;
                         }
 
                         target: timelineView
                     }
+
+                    Connections {
+                        function onIsOnCallChanged() {
+                            if (!MatrixRTCSession.isOnCall) {
+                                stackLayout.currentIndex = 0;
+                            }
+                        }
+
+                        target: MatrixRTCSession
+                    }
+
                     MessageView {
                         Layout.fillWidth: true
-                        implicitHeight: msgView.height - typingIndicator.height
+                        Layout.fillHeight: true
                         searchString: topBar.searchString
                         filterByNotifications: topBar.filterNotifications
                     }
@@ -129,6 +144,9 @@ Item {
                     Loader {
                         id: callViewLoader
                         active: MatrixRTCSession.isOnCall
+                        
+                        Layout.fillWidth: true
+                        Layout.fillHeight: true
                         
                         source: "voip/GroupCallParticipantsView.qml"
                         property var room: timelineView.room

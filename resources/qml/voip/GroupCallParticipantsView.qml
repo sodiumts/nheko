@@ -35,6 +35,10 @@ Item {
                 property real avatarSize: Math.min(cell.width * 0.6, 80)
                 property real nameHeight: fontMetrics.lineSpacing * 1.2
                 property real participantVolume: 1.0
+                
+                Component.onCompleted: {
+                    participantVolume = MatrixRTCSession.getSavedParticipantVolume(fullId)
+                }
 
                 Rectangle {
                     anchors.fill: parent

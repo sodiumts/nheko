@@ -38,7 +38,8 @@ public:
     LiveKitSession* livekitSession() const { return livekitSession_; }
     
     Q_INVOKABLE void setParticipantVolume(const QString &identity, double volume);
-
+    Q_INVOKABLE double getSavedParticipantVolume(const QString &fullUserId);
+    
     void publishMicrophone();
 
     void shareScreen();
@@ -119,8 +120,9 @@ private:
                                             const std::vector<uint8_t> &rawKeyMaterial);
 
     void setCallState(int newState);
-
-    std::optional<mtx::events::state::CallMember> findActiveCallMember(TimelineModel *timelineModel);
+    
+    double getSavedParticipantVolume(const std::string &fullUserId);
+    void saveParticipantVolume(const std::string &fullUserId, double volume);
 
     std::set<std::string> activeParticipantUserIds_;
 
@@ -156,5 +158,7 @@ private:
     webrtc::ScreenShareType screenShareType_;
 
     std::string livekitEndpoint_ = "";
+    
+    std::map<std::string, double> participantVolumes_;
 
 };

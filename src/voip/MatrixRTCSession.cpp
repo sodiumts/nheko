@@ -15,6 +15,7 @@
 #include "timeline/TimelineViewManager.h"
 
 #include <QRandomGenerator>
+#include <QSettings>
 #include <mtx/responses/well-known.hpp>
 
 MatrixRTCSession *MatrixRTCSession::create(QQmlEngine *qmlEngine, QJSEngine *)
@@ -72,7 +73,14 @@ void MatrixRTCSession::setParticipantVolume(const QString &identity, double volu
     if (!livekitSession_) return;
 
     livekitSession_->setParticipantVolume(identity, volume);
+    saveParticipantVolume(identity.toStdString(), volume);
 }
+
+double MatrixRTCSession::getSavedParticipantVolume(const QString &fullUserId)
+{
+    return getSavedParticipantVolume(fullUserId.toStdString());
+}
+
 void MatrixRTCSession::requestLiveKitJWT(const mtx::responses::MatrixOpenidToken &openIDToken) {
     if (!nam_) {
         nam_ = new QNetworkAccessManager(this);
@@ -297,6 +305,7 @@ void MatrixRTCSession::leave()
     keyRotationTimer_.stop();
     activeParticipantUserIds_.clear();
     participantsList_.clear();
+    emit participantsChanged();
     currentEncKeyMaterial_.clear();
     sendMembershipEvent(true);
 
@@ -542,6 +551,42 @@ void MatrixRTCSession::sendMembershipEvent(bool leave)
                 nhlog::net()->info("Call member event sent");
             }
         });
+}
+
+double MatrixRTCSession::getSavedParticipantVolume(const std::string &fullUserId)
+{
+    auto it = participantVolumes_.find(fullUserId);
+    if (it != participantVolumes_.end()) {
+        nhlog::net()->debug("MatrixRTC: retrieved saved volume for {} = {}", 
+                           fullUserId, it->second);
+        return it->second;
+    }
+    
+    QSettings settings;
+    settings.beginGroup("participant_volumes");
+    double volume = settings.value(QString::fromStdString(fullUserId), 1.0).toDouble();
+    settings.endGroup();
+    
+    if (volume != 1.0) {
+        nhlog::net()->info("MatrixRTC: loaded saved volume for {} = {} from settings", 
+                          fullUserId, volume);
+        participantVolumes_[fullUserId] = volume;
+    }
+    
+    return volume;
+}
+
+void MatrixRTCSession::saveParticipantVolume(const std::string &fullUserId, double volume)
+{
+    nhlog::net()->info("MatrixRTC: saving volume for {} = {}", fullUserId, volume);
+    
+    participantVolumes_[fullUserId] = volume;
+    
+    QSettings settings;
+    settings.beginGroup("participant_volumes");
+    settings.setValue(QString::fromStdString(fullUserId), volume);
+    settings.endGroup();
+    settings.sync();
 }
 
 #include "moc_MatrixRTCSession.cpp"
