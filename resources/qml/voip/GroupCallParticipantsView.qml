@@ -66,13 +66,37 @@ Item {
 
                 Popup {
                     id: volumePopup
-                    x: ma.savedX
-                    y: ma.savedY
                     width: 180
                     modal: true
                     focus: true
                     closePolicy: Popup.CloseOnEscape | Popup.CloseOnPressOutside
                     padding: 10
+                    
+                    x: {
+                        var xPos = ma.savedX
+                        // Adjust if popup would go offscreen on the right
+                        if (xPos + width > parent.width) {
+                            xPos = parent.width - width - 4
+                        }
+                        // Adjust if popup would go offscreen on the left
+                        if (xPos < 0) {
+                            xPos = 4
+                        }
+                        return xPos
+                    }
+                    
+                    y: {
+                        var yPos = ma.savedY
+                        // Adjust if popup would go offscreen at bottom
+                        if (yPos + height > parent.height) {
+                            yPos = parent.height - height - 4
+                        }
+                        // Adjust if popup would go offscreen at top
+                        if (yPos < 0) {
+                            yPos = 4
+                        }
+                        return yPos
+                    }
 
                     background: Rectangle {
                         color: palette.window
@@ -145,31 +169,52 @@ Item {
                                     x: volumeSlider.leftPadding
                                     y: volumeSlider.topPadding + volumeSlider.availableHeight / 2 - height / 2
                                     implicitWidth: 200
-                                    implicitHeight: 4
+                                    implicitHeight: 20
                                     width: volumeSlider.availableWidth
-                                    height: 4
+                                    height: 20
                                     radius: 2
-                                    color: palette.mid
+                                    color: "transparent"
 
                                     Rectangle {
-                                        width: volumeSlider.visualPosition * parent.width
-                                        height: parent.height
-                                        radius: parent.radius
-                                        color: palette.highlight
+                                        anchors.centerIn: parent
+                                        width: parent.width
+                                        height: 4
+                                        radius: 2
+                                        color: palette.mid
+
+                                        Rectangle {
+                                            width: volumeSlider.visualPosition * parent.width
+                                            height: parent.height
+                                            radius: parent.radius
+                                            color: palette.highlight
+                                        }
+                                    }
+
+                                    MouseArea {
+                                        anchors.fill: parent
+                                        cursorShape: Qt.PointingHandCursor
+                                        acceptedButtons: Qt.NoButton
                                     }
                                 }
 
                                 handle: Rectangle {
-                                    implicitWidth: 14
-                                    implicitHeight: 14
+                                    implicitWidth: 20
+                                    implicitHeight: 20
                                     x: volumeSlider.leftPadding + volumeSlider.visualPosition
                                     * (volumeSlider.availableWidth - width)
                                     y: volumeSlider.topPadding + volumeSlider.availableHeight / 2 - height / 2
-                                    width: 14
-                                    height: 14
-                                    radius: 7
+                                    width: 20
+                                    height: 20
+                                    radius: 10
                                     color: volumeSlider.pressed ? palette.highlight : palette.button
                                     border.color: palette.mid
+                                    border.width: 2
+                                    
+                                    MouseArea {
+                                        anchors.fill: parent
+                                        cursorShape: Qt.SizeHorCursor
+                                        acceptedButtons: Qt.NoButton
+                                    }
                                 }
                             } 
                         }
