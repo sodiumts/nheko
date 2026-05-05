@@ -1,6 +1,7 @@
 import QtQuick
 import QtQuick.Layouts
 import QtQuick.Controls
+import org.freedesktop.gstreamer.Qt6GLVideoItem 1.0
 import im.nheko 1.0
 
 Item {
@@ -8,8 +9,9 @@ Item {
     property var participants: MatrixRTCSession.participants ?? []
     readonly property int maxColumns: 5
     readonly property int columns: Math.min(participants.length, maxColumns)
-
+    property var currentStreamingCell: null
     GridLayout {
+        id: grid
         anchors.fill: parent
         anchors.margins: 4
         columns: root.columns
@@ -25,7 +27,7 @@ Item {
                 border.width: 1
                 radius: 6
                 Layout.fillWidth: true
-                Layout.preferredHeight: avatarSize + nameHeight + 16
+                Layout.preferredHeight: isStreaming ? Math.max(cell.width * 9/16, avatarSize + nameHeight + 16) : avatarSize + nameHeight + 16
                 Layout.maximumHeight: Layout.preferredHeight
 
                 property string fullId: modelData
@@ -35,9 +37,18 @@ Item {
                 property real avatarSize: Math.min(cell.width * 0.6, 80)
                 property real nameHeight: fontMetrics.lineSpacing * 1.2
                 property real participantVolume: 1.0
+                property bool isStreaming: MatrixRTCSession.streamingParticipants.includes(modelData)
                 
                 Component.onCompleted: {
                     participantVolume = MatrixRTCSession.getSavedParticipantVolume(fullId)
+                }
+
+                onIsStreamingChanged: {
+                    if (isStreaming) {
+                        root.currentStreamingCell = cell
+                    } else if (root.currentStreamingCell === cell) {
+                        root.currentStreamingCell = null
+                    }
                 }
 
                 Rectangle {
@@ -222,6 +233,7 @@ Item {
                 }
 
                 Column {
+                    visible: !cell.isStreaming
                     anchors.centerIn: parent
                     spacing: 4
 
@@ -264,5 +276,18 @@ Item {
                 }
             }
         }
+    }
+
+    GstGLQt6VideoItem {
+        id: globalVideoItem
+        objectName: "groupCallVideoItem"
+        x: root.currentStreamingCell ? grid.x + root.currentStreamingCell.x : 0
+        y: root.currentStreamingCell ? grid.y + root.currentStreamingCell.y : 0
+        width: root.currentStreamingCell ? root.currentStreamingCell.width : 0
+        height: root.currentStreamingCell ? root.currentStreamingCell.height : 0
+        opacity: root.currentStreamingCell ? 1.0 : 0.0
+        Behavior on opacity { NumberAnimation { duration: 150 } }
+        visible: opacity > 0
+        z: 1
     }
 }

@@ -149,6 +149,7 @@ Item {
                         Layout.fillHeight: true
                         
                         source: "voip/GroupCallParticipantsView.qml"
+                        onLoaded: TimelineManager.setVideoCallItem()
                         property var room: timelineView.room
                     }
                 }

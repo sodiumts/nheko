@@ -922,6 +922,10 @@ GStreamerSFUSession::onPadAdded(GstElement *, GstPad *pad, const gpointer user_d
     // TODO: implement multi stream watching
     if (media && g_strcmp0(media, "video") == 0) {
         if (self->videoItem_) {
+            if (self->videoSink_) {
+                self->clearVideoDisplay();
+            }
+
             GstElement *queue   = gst_element_factory_make("queue", nullptr);
             GstElement *depay   = gst_element_factory_make("rtpvp8depay", nullptr);
             GstElement *dec     = gst_element_factory_make("vp8dec", nullptr);
@@ -932,6 +936,11 @@ GStreamerSFUSession::onPadAdded(GstElement *, GstPad *pad, const gpointer user_d
             if (queue && depay && dec && convert && upload && sink) {
                 g_object_set(sink, "widget", self->videoItem_, nullptr);
                 self->videoSink_ = sink;
+                self->videoQueue_ = queue;
+                self->videoDepay_ = depay;
+                self->videoDec_ = dec;
+                self->videoConvert_ = convert;
+                self->videoUpload_ = upload;
 
                 gst_bin_add_many(
                   GST_BIN(self->pipe_), queue, depay, dec, convert, upload, sink, nullptr);
@@ -1062,7 +1071,6 @@ GStreamerSFUSession::acceptRenegotiationOffer(const std::string &sdp)
         return false;
     }
 
-    // Build mid → media-type map NOW, before sdpMsg ownership is transferred.
     std::unordered_map<std::string, std::string> midToMedia;
     const guint mlineCount = gst_sdp_message_medias_len(sdpMsg);
     for (guint m = 0; m < mlineCount; m++) {
@@ -1073,7 +1081,31 @@ GStreamerSFUSession::acceptRenegotiationOffer(const std::string &sdp)
             midToMedia[mid] = mediaType;
     }
 
-    // sdpMsg ownership passes to offer here — don't touch sdpMsg after this.
+    bool videoActive = false;
+    for (guint m = 0; m < mlineCount; m++) {
+        const GstSDPMedia *media = gst_sdp_message_get_media(sdpMsg, m);
+        const char *mediaType = gst_sdp_media_get_media(media);
+        if (g_strcmp0(mediaType, "video") == 0) {
+            const char *inactive = gst_sdp_media_get_attribute_val(media, "inactive");
+            if (!inactive) {
+                for (guint a = 0; a < gst_sdp_media_attributes_len(media); a++) {
+                    const GstSDPAttribute *attr = gst_sdp_media_get_attribute(media, a);
+                    if (g_strcmp0(attr->key, "ssrc") == 0) {
+                        videoActive = true;
+                        break;
+                    }
+                }
+            }
+            break;
+        }
+    }
+
+    if (!videoActive && videoSink_) {
+        nhlog::ui()->info("SFU: video became inactive, cleaning up video pipeline");
+        clearVideoDisplay();
+        emit videoBecameInactive();
+    }
+
     GstWebRTCSessionDescription *offer =
         gst_webrtc_session_description_new(GST_WEBRTC_SDP_TYPE_OFFER, sdpMsg);
 
@@ -1111,8 +1143,14 @@ GStreamerSFUSession::acceptRenegotiationOffer(const std::string &sdp)
             nhlog::ui()->info("SFU: transceiver {} direction: {} media: {}",
                               i, static_cast<int>(dir), mediaType.empty() ? "unknown" : mediaType);
 
-            g_object_set(trans, "direction",
-                         GST_WEBRTC_RTP_TRANSCEIVER_DIRECTION_RECVONLY, nullptr);
+            if (mediaType == "video" && !videoActive) {
+                g_object_set(trans, "direction",
+                             GST_WEBRTC_RTP_TRANSCEIVER_DIRECTION_INACTIVE, nullptr);
+                nhlog::ui()->info("SFU: set video transceiver to INACTIVE");
+            } else {
+                g_object_set(trans, "direction",
+                             GST_WEBRTC_RTP_TRANSCEIVER_DIRECTION_RECVONLY, nullptr);
+            }
 
             if (mediaType == "audio")
                 g_object_set(trans, "codec-preferences", audioCaps, nullptr);
@@ -1396,6 +1434,40 @@ GStreamerSFUSession::setStreamVolume(const std::string &padName, double volume) 
 
     g_object_set(it->second, "volume", volume, nullptr);
     nhlog::ui()->info("SFU: set volume for pad '{}' to {:.2f}", padName, volume);
+}
+
+void
+GStreamerSFUSession::clearVideoDisplay() {
+    if (videoSink_ && pipe_) {
+        nhlog::ui()->info("SFU: clearing video display and cleaning up video elements");
+        
+        if (videoSink_) gst_element_set_state(videoSink_, GST_STATE_NULL);
+        if (videoUpload_) gst_element_set_state(videoUpload_, GST_STATE_NULL);
+        if (videoConvert_) gst_element_set_state(videoConvert_, GST_STATE_NULL);
+        if (videoDec_) gst_element_set_state(videoDec_, GST_STATE_NULL);
+        if (videoDepay_) gst_element_set_state(videoDepay_, GST_STATE_NULL);
+        if (videoQueue_) gst_element_set_state(videoQueue_, GST_STATE_NULL);
+        
+        if (videoSink_) {
+            g_object_set(videoSink_, "widget", nullptr, nullptr);
+        }
+        
+        if (videoSink_) gst_bin_remove(GST_BIN(pipe_), videoSink_);
+        if (videoUpload_) gst_bin_remove(GST_BIN(pipe_), videoUpload_);
+        if (videoConvert_) gst_bin_remove(GST_BIN(pipe_), videoConvert_);
+        if (videoDec_) gst_bin_remove(GST_BIN(pipe_), videoDec_);
+        if (videoDepay_) gst_bin_remove(GST_BIN(pipe_), videoDepay_);
+        if (videoQueue_) gst_bin_remove(GST_BIN(pipe_), videoQueue_);
+        
+        videoSink_ = nullptr;
+        videoQueue_ = nullptr;
+        videoDepay_ = nullptr;
+        videoDec_ = nullptr;
+        videoConvert_ = nullptr;
+        videoUpload_ = nullptr;
+        
+        nhlog::ui()->info("SFU: video display cleared");
+    }
 }
 #endif // GSTREAMER_AVAILABLE
 

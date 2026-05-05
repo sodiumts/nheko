@@ -146,6 +146,7 @@ private:
     std::string stateKey_;
     QNetworkAccessManager *nam_ = nullptr;
     bool isActive_ = false;
+    bool sfuConnectionsMade_ = false;
 
     mtx::responses::TurnServer turnServers_;
     LiveKitSession *livekitSession_ = nullptr;

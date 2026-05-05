@@ -265,24 +265,46 @@ TimelineViewManager::getGlobalUserProfile(QString userId)
 void
 TimelineViewManager::setVideoCallItem()
 {
-    WebRTCSession::instance().setVideoItem(
-      MainWindow::instance()->rootObject()->findChild<QQuickItem *>(
-        QStringLiteral("videoCallItem")));
+    auto *rtc = ChatPage::instance()->matrixRTC();
+    bool isGroupCall = rtc && rtc->participants().size() > 2;
 
-    auto *livekit = ChatPage::instance()->matrixRTC()->livekitSession();
+    if (!isGroupCall) {
+        WebRTCSession::instance().setVideoItem(
+          MainWindow::instance()->rootObject()->findChild<QQuickItem *>(
+            QStringLiteral("videoCallItem")));
+    }
+
+    auto *livekit = rtc ? rtc->livekitSession() : nullptr;
     if (!livekit) {
         nhlog::ui()->warn("setVideoCallItem: no active LiveKit session");
         return;
     }
 
-    auto *item = MainWindow::instance()->rootObject()->findChild<QQuickItem *>(
-        QStringLiteral("videoCallItem"));
-    if (!item) {
-        nhlog::ui()->warn("setVideoCallItem: videoCallItem not found in QML");
-        return;
+    QQuickItem *item = nullptr;
+    if (isGroupCall) {
+        item = MainWindow::instance()->rootObject()->findChild<QQuickItem *>(
+            QStringLiteral("groupCallVideoItem"));
+        if (!item) {
+            nhlog::ui()->warn("setVideoCallItem: groupCallVideoItem not found in QML");
+            return;
+        }
+        nhlog::ui()->info("setVideoCallItem: found groupCallVideoItem");
+    } else {
+        item = MainWindow::instance()->rootObject()->findChild<QQuickItem *>(
+            QStringLiteral("videoCallItem"));
+        if (!item) {
+            nhlog::ui()->warn("setVideoCallItem: videoCallItem not found in QML");
+            return;
+        }
     }
 
     livekit->setVideoItem(item);
+    
+    auto *sfu = livekit->sfu_session();
+    if (sfu) {
+        sfu->setVideoItem(item);
+        nhlog::ui()->info("setVideoCallItem: set video item on existing sfu session");
+    }
 }
 
 void

@@ -50,12 +50,16 @@ public:
 
     void setVideoItem(QQuickItem *item) { videoItem_ = item; }
 
+    void clearVideoDisplay();
+
     std::vector<uint8_t> generateEncryptionKeyMaterial(uint8_t kid = 0);
 
     void setStreamVolume(const std::string &padName, double volume);
+    QQuickItem *videoItem() const { return videoItem_; }
 
 
 signals:
+    void videoBecameInactive();
     void subscriberAnswerCreated(const std::string& sdp);
     void subscriberICECandidate(const std::string& candidate,
         const std::string& sdpMid,
@@ -144,7 +148,12 @@ private:
     GstElement *audioSink_ = nullptr;
 
     QQuickItem *videoItem_ = nullptr;
-    GstElement *videoSink_ = nullptr; 
+    GstElement *videoSink_ = nullptr;
+    GstElement *videoQueue_ = nullptr;
+    GstElement *videoDepay_ = nullptr;
+    GstElement *videoDec_ = nullptr;
+    GstElement *videoConvert_ = nullptr;
+    GstElement *videoUpload_ = nullptr;
 
     CallDevices &devices_;
 

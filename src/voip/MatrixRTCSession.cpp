@@ -273,14 +273,51 @@ void MatrixRTCSession::onCredentialsReceived(QNetworkReply *reply)
         nhlog::ui()->info("user={} started streaming", identity.toStdString());
         streamingCurrently_.push_back(identity);
 
+        if (!streamingParticipantsList_.contains(identity)) {
+            streamingParticipantsList_.append(identity);
+            emit streamingParticipantsChanged();
+        }
+
         if (!isStreaming_ && !streamingCurrently_.empty()) {
             isStreaming_ = true;
             emit isStreamingChanged();
+        }
+
+        if (livekitSession_) {
+            auto *sfu = livekitSession_->sfu_session();
+            if (sfu && !sfuConnectionsMade_) {
+                connect(sfu, &GStreamerSFUSession::videoBecameInactive, this, [this]() {
+                    for (const auto &identity : streamingCurrently_) {
+                        nhlog::ui()->info("user={} stopped streaming (SDP inactive)", identity.toStdString());
+                        streamingParticipantsList_.removeOne(identity);
+                        emit streamingParticipantsChanged();
+                        emit participantLeft(identity);
+                    }
+                    streamingCurrently_.clear();
+                    if (isStreaming_) {
+                        isStreaming_ = false;
+                        emit isStreamingChanged();
+                    }
+                });
+                sfuConnectionsMade_ = true;
+            }
         }
     });
     connect(livekitSession_, &LiveKitSession::participantStoppedVideo, this, [this](const QString &identity, const QString &sid) {
         nhlog::ui()->info("user={} stopped streaming", identity.toStdString());
         std::erase(streamingCurrently_, identity);
+
+        if (streamingParticipantsList_.contains(identity)) {
+            streamingParticipantsList_.removeOne(identity);
+            emit streamingParticipantsChanged();
+        }
+
+        if (livekitSession_) {
+            auto *sfu = livekitSession_->sfu_session();
+            if (sfu) {
+                sfu->clearVideoDisplay();
+            }
+        }
 
         if (isStreaming_ && streamingCurrently_.empty()) {
             isStreaming_ = false;
@@ -306,6 +343,11 @@ void MatrixRTCSession::leave()
     activeParticipantUserIds_.clear();
     participantsList_.clear();
     emit participantsChanged();
+    streamingCurrently_.clear();
+    streamingParticipantsList_.clear();
+    emit streamingParticipantsChanged();
+    isStreaming_ = false;
+    emit isStreamingChanged();
     currentEncKeyMaterial_.clear();
     sendMembershipEvent(true);
 

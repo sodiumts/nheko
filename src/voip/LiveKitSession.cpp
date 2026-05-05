@@ -4,6 +4,7 @@
 #include "LiveKitSession.h"
 #include <QJsonObject>
 #include <QNetworkRequest>
+#include "MainWindow.h"
 #include <QUuid>
 #include "Logging.h"
 
@@ -293,8 +294,20 @@ LiveKitSession::handleOffer(const livekit::SessionDescription &offer)
     if (!sfuSession_) {
         sfuSession_ = new GStreamerSFUSession(this);
 
-        if(videoItem_)
-            sfuSession_->setVideoItem(videoItem_);
+        QQuickItem *videoToUse = videoItem_;
+        if (!videoToUse) {
+            auto *mainWindow = MainWindow::instance();
+            if (mainWindow && mainWindow->rootObject()) {
+                videoToUse = mainWindow->rootObject()->findChild<QQuickItem *>(
+                    QStringLiteral("groupCallVideoItem"));
+                if (videoToUse) {
+                    nhlog::net()->info("LiveKit: found groupCallVideoItem via search");
+                }
+            }
+        }
+        
+        if(videoToUse)
+            sfuSession_->setVideoItem(videoToUse);
 
         QObject::connect(sfuSession_,
                          &GStreamerSFUSession::subscriberAnswerCreated,
@@ -342,7 +355,26 @@ LiveKitSession::handleOffer(const livekit::SessionDescription &offer)
               this, &LiveKitSession::publishMicrophone, Qt::QueuedConnection);
         }
     } else {
-        nhlog::net()->info("LiveKit: renegotiation offer received");        
+        nhlog::net()->info("LiveKit: renegotiation offer received");
+
+        if (!sfuSession_->videoItem()) {
+            QQuickItem *videoToUse = videoItem_;
+            if (!videoToUse) {
+                auto *mainWindow = MainWindow::instance();
+                if (mainWindow && mainWindow->rootObject()) {
+                    videoToUse = mainWindow->rootObject()->findChild<QQuickItem *>(
+                      QStringLiteral("groupCallVideoItem"));
+                    if (videoToUse)
+                        nhlog::net()->info("LiveKit: found groupCallVideoItem for renegotiation");
+                    else
+                        nhlog::net()->warn(
+                          "LiveKit: groupCallVideoItem not found — video will use fakesink");
+                }
+            }
+            if (videoToUse)
+                sfuSession_->setVideoItem(videoToUse);
+        }
+
         if (!sfuSession_->acceptRenegotiationOffer(offer.sdp()))
             emit error(QStringLiteral("Failed to accept renegotiation offer"));
     }
