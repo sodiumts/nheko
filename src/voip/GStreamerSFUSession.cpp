@@ -1488,11 +1488,7 @@ GStreamerSFUSession::clearVideoDisplay() {
         if (videoDec_) gst_element_set_state(videoDec_, GST_STATE_NULL);
         if (videoDepay_) gst_element_set_state(videoDepay_, GST_STATE_NULL);
         if (videoQueue_) gst_element_set_state(videoQueue_, GST_STATE_NULL);
-        
-        if (videoSink_) {
-            g_object_set(videoSink_, "widget", nullptr, nullptr);
-        }
-        
+         
         if (videoSink_) gst_bin_remove(GST_BIN(pipe_), videoSink_);
         if (videoUpload_) gst_bin_remove(GST_BIN(pipe_), videoUpload_);
         if (videoConvert_) gst_bin_remove(GST_BIN(pipe_), videoConvert_);

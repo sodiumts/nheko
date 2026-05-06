@@ -64,6 +64,7 @@ signals:
     void publisherPipelineReady();
     void participantStartedVideo(QString identity, QString sid);
     void participantStoppedVideo(QString identity, QString sid);
+    void videoBecameInactive();
 
 private slots:
     void onWebSocketConnected();

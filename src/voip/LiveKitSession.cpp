@@ -310,6 +310,11 @@ LiveKitSession::handleOffer(const livekit::SessionDescription &offer)
             sfuSession_->setVideoItem(videoToUse);
 
         QObject::connect(sfuSession_,
+                         &GStreamerSFUSession::videoBecameInactive,
+                         this,
+                         &LiveKitSession::videoBecameInactive);
+
+        QObject::connect(sfuSession_,
                          &GStreamerSFUSession::subscriberAnswerCreated,
                          this,
                          &LiveKitSession::sendAnswer);

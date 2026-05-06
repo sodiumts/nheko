@@ -269,40 +269,38 @@ void MatrixRTCSession::onCredentialsReceived(QNetworkReply *reply)
                 emit participantLeft(identity);
             });
 
-    connect(livekitSession_, &LiveKitSession::participantStartedVideo, this, [this](const QString &identity, const QString &sid) {
-        nhlog::ui()->info("user={} started streaming", identity.toStdString());
-        streamingCurrently_.push_back(identity);
+    connect(livekitSession_,
+            &LiveKitSession::participantStartedVideo,
+            this,
+            [this](const QString &identity, const QString &sid) {
+                nhlog::ui()->info("user={} started streaming", identity.toStdString());
+                streamingCurrently_.push_back(identity);
 
-        if (!streamingParticipantsList_.contains(identity)) {
-            streamingParticipantsList_.append(identity);
+                if (!streamingParticipantsList_.contains(identity)) {
+                    streamingParticipantsList_.append(identity);
+                    emit streamingParticipantsChanged();
+                }
+
+                if (!isStreaming_ && !streamingCurrently_.empty()) {
+                    isStreaming_ = true;
+                    emit isStreamingChanged();
+                }
+            });
+
+    connect(livekitSession_, &LiveKitSession::videoBecameInactive, this, [this]() {
+        for (const auto &identity : streamingCurrently_) {
+            nhlog::ui()->info("user={} stopped streaming (SDP inactive)", identity.toStdString());
+            streamingParticipantsList_.removeOne(identity);
             emit streamingParticipantsChanged();
+            emit participantLeft(identity);
         }
-
-        if (!isStreaming_ && !streamingCurrently_.empty()) {
-            isStreaming_ = true;
+        streamingCurrently_.clear();
+        if (isStreaming_) {
+            isStreaming_ = false;
             emit isStreamingChanged();
         }
-
-        if (livekitSession_) {
-            auto *sfu = livekitSession_->sfu_session();
-            if (sfu && !sfuConnectionsMade_) {
-                connect(sfu, &GStreamerSFUSession::videoBecameInactive, this, [this]() {
-                    for (const auto &identity : streamingCurrently_) {
-                        nhlog::ui()->info("user={} stopped streaming (SDP inactive)", identity.toStdString());
-                        streamingParticipantsList_.removeOne(identity);
-                        emit streamingParticipantsChanged();
-                        emit participantLeft(identity);
-                    }
-                    streamingCurrently_.clear();
-                    if (isStreaming_) {
-                        isStreaming_ = false;
-                        emit isStreamingChanged();
-                    }
-                });
-                sfuConnectionsMade_ = true;
-            }
-        }
     });
+
     connect(livekitSession_, &LiveKitSession::participantStoppedVideo, this, [this](const QString &identity, const QString &sid) {
         nhlog::ui()->info("user={} stopped streaming", identity.toStdString());
         std::erase(streamingCurrently_, identity);
