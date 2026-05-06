@@ -10,6 +10,7 @@
 #include <openssl/rand.h>
 
 #include <gst/rtp/gstrtpbuffer.h>
+#include "gst/gl/gstgldisplay.h"
 
 static constexpr auto STUN_SERVER = "stun://turn.matrix.org:3478";
 
@@ -926,26 +927,66 @@ GStreamerSFUSession::onPadAdded(GstElement *, GstPad *pad, const gpointer user_d
                 self->clearVideoDisplay();
             }
 
-            GstElement *queue   = gst_element_factory_make("queue", nullptr);
-            GstElement *depay   = gst_element_factory_make("rtpvp8depay", nullptr);
-            GstElement *dec     = gst_element_factory_make("vp8dec", nullptr);
-            GstElement *convert = gst_element_factory_make("videoconvert", nullptr);
-            GstElement *upload  = gst_element_factory_make("glupload", nullptr);
-            GstElement *sink = gst_element_factory_make("qml6glsink", nullptr);
+            const char *depay_name = nullptr;
+            const char *dec_name   = nullptr;
 
-            if (queue && depay && dec && convert && upload && sink) {
+            if (encoding && g_ascii_strcasecmp(encoding, "VP8") == 0) {
+                depay_name = "rtpvp8depay";
+                dec_name   = "vp8dec";
+            } else if (encoding && g_ascii_strcasecmp(encoding, "VP9") == 0) {
+                depay_name = "rtpvp9depay";
+                dec_name   = "vp9dec";
+            } else if (encoding && g_ascii_strcasecmp(encoding, "H264") == 0) {
+                depay_name = "rtph264depay";
+                dec_name   = "avdec_h264";
+            } else if (encoding && g_ascii_strcasecmp(encoding, "AV1") == 0) {
+                depay_name = "rtpav1depay";
+                dec_name   = "av1dec";
+            } else {
+                // Default to VP8
+                depay_name = "rtpvp8depay";
+                dec_name   = "vp8dec";
+                nhlog::ui()->warn("SFU: unknown video encoding '{}', defaulting to VP8",
+                                  encoding ? encoding : "unknown");
+            }
+
+            GstElement *queue     = gst_element_factory_make("queue", nullptr);
+            GstElement *depay     = gst_element_factory_make(depay_name, nullptr);
+            GstElement *dec       = gst_element_factory_make(dec_name, nullptr);
+            GstElement *convert   = gst_element_factory_make("videoconvert", nullptr);
+            GstElement *capsf     = gst_element_factory_make("capsfilter", nullptr);
+            GstElement *glsinkbin = gst_element_factory_make("glsinkbin", nullptr);
+            GstElement *sink      = gst_element_factory_make("qml6glsink", nullptr);
+
+            if (queue && depay && dec && convert && capsf && glsinkbin && sink) {
+                GstCaps *video_caps =
+                  gst_caps_new_simple("video/x-raw", "format", G_TYPE_STRING, "I420", nullptr);
+                g_object_set(capsf, "caps", video_caps, nullptr);
+                gst_caps_unref(video_caps);
+
                 g_object_set(sink, "widget", self->videoItem_, nullptr);
-                self->videoSink_ = sink;
-                self->videoQueue_ = queue;
-                self->videoDepay_ = depay;
-                self->videoDec_ = dec;
+                g_object_set(glsinkbin, "sink", sink, nullptr);
+
+                self->videoSink_    = glsinkbin;
+                self->videoQueue_   = queue;
+                self->videoDepay_   = depay;
+                self->videoDec_     = dec;
                 self->videoConvert_ = convert;
-                self->videoUpload_ = upload;
 
                 gst_bin_add_many(
-                  GST_BIN(self->pipe_), queue, depay, dec, convert, upload, sink, nullptr);
+                  GST_BIN(self->pipe_), queue, depay, dec, convert, capsf, glsinkbin, nullptr);
 
-                if (gst_element_link_many(queue, depay, dec, convert, upload, sink, nullptr)) {
+                if (gst_element_link_many(queue, depay, dec, convert, capsf, glsinkbin, nullptr)) {
+                    gst_element_set_state(sink, GST_STATE_READY);
+
+                    if (QGuiApplication::platformName() == QStringLiteral("wayland")) {
+                        auto context = gst_element_get_context(sink, "gst.gl.GLDisplay");
+                        if (context) {
+                            GstGLDisplay *display;
+                            gst_context_get_gl_display(context, &display);
+                        }
+                    }
+
                     GstPad *decSinkPad = gst_element_get_static_pad(dec, "sink");
                     if (decSinkPad) {
                         gst_pad_add_probe(decSinkPad,
@@ -963,9 +1004,9 @@ GStreamerSFUSession::onPadAdded(GstElement *, GstPad *pad, const gpointer user_d
                         gst_element_sync_state_with_parent(depay);
                         gst_element_sync_state_with_parent(dec);
                         gst_element_sync_state_with_parent(convert);
-                        gst_element_sync_state_with_parent(upload);
-                        gst_element_sync_state_with_parent(sink);
-                        nhlog::ui()->info("SFU: routed video pad to qml6glsink");
+                        gst_element_sync_state_with_parent(capsf);
+                        gst_element_sync_state_with_parent(glsinkbin);
+                        nhlog::ui()->info("SFU: routed video pad to qml6glsink via glsinkbin");
                         return;
                     }
                     if (queueSink)
@@ -973,33 +1014,20 @@ GStreamerSFUSession::onPadAdded(GstElement *, GstPad *pad, const gpointer user_d
                 }
 
                 nhlog::ui()->error("SFU: failed to link video branch, falling back to fakesink");
-                gst_element_set_state(sink, GST_STATE_NULL);
-                gst_element_set_state(upload, GST_STATE_NULL);
-                gst_element_set_state(convert, GST_STATE_NULL);
-                gst_element_set_state(dec, GST_STATE_NULL);
-                gst_element_set_state(depay, GST_STATE_NULL);
-                gst_element_set_state(queue, GST_STATE_NULL);
-                gst_bin_remove(GST_BIN(self->pipe_), sink);
-                gst_bin_remove(GST_BIN(self->pipe_), upload);
-                gst_bin_remove(GST_BIN(self->pipe_), convert);
-                gst_bin_remove(GST_BIN(self->pipe_), dec);
-                gst_bin_remove(GST_BIN(self->pipe_), depay);
-                gst_bin_remove(GST_BIN(self->pipe_), queue);
+                for (auto *el : {glsinkbin, capsf, convert, dec, depay, queue}) {
+                    gst_element_set_state(el, GST_STATE_NULL);
+                    gst_bin_remove(GST_BIN(self->pipe_), el);
+                }
             } else {
                 nhlog::ui()->error(
                   "SFU: failed to create video branch elements, falling back to fakesink");
-                if (queue)
-                    gst_object_unref(queue);
-                if (depay)
-                    gst_object_unref(depay);
-                if (dec)
-                    gst_object_unref(dec);
-                if (convert)
-                    gst_object_unref(convert);
-                if (upload)
-                    gst_object_unref(upload);
-                if (sink)
-                    gst_object_unref(sink);
+                if (glsinkbin && sink) {
+                    g_object_set(glsinkbin, "sink", nullptr, nullptr);
+                }
+                for (auto *el : {queue, depay, dec, convert, capsf, glsinkbin, sink}) {
+                    if (el)
+                        gst_object_unref(el);
+                }
             }
         } else {
             nhlog::ui()->warn("SFU: video pad arrived but no videoItem set, using fakesink");
@@ -1041,6 +1069,19 @@ GStreamerSFUSession::onBusMessage([[maybe_unused]] GstBus *bus,
         gst_message_parse_error(message, &err, &dbgInfo);
         nhlog::ui()->error("SFU: GStreamer error: {} ({})",
                            err->message, dbgInfo ? dbgInfo : "none");
+        
+        GstObject *source = GST_MESSAGE_SRC(message);
+        if (source && GST_IS_ELEMENT(source)) {
+            const gchar *element_name = GST_ELEMENT_NAME(source);
+            if (element_name && g_str_has_prefix(element_name, "qml6glsink")) {
+                nhlog::ui()->warn("SFU: qml6glsink initialization failed, video display unavailable but continuing session");
+                g_error_free(err);
+                g_free(dbgInfo);
+                return TRUE;
+            }
+        }
+        
+        // For all other errors, fail the session
         emit self->failed(QString::fromUtf8(err->message));
         g_error_free(err);
         g_free(dbgInfo);

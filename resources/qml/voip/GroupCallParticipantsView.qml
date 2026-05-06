@@ -281,10 +281,10 @@ Item {
     GstGLQt6VideoItem {
         id: globalVideoItem
         objectName: "groupCallVideoItem"
-        x: root.currentStreamingCell ? grid.x + root.currentStreamingCell.x : 0
-        y: root.currentStreamingCell ? grid.y + root.currentStreamingCell.y : 0
-        width: root.currentStreamingCell ? root.currentStreamingCell.width : 0
-        height: root.currentStreamingCell ? root.currentStreamingCell.height : 0
+        x: root.currentStreamingCell ? grid.x + root.currentStreamingCell.x : grid.x
+        y: root.currentStreamingCell ? grid.y + root.currentStreamingCell.y : grid.y
+        width: root.currentStreamingCell ? root.currentStreamingCell.width : grid.width
+        height: root.currentStreamingCell ? root.currentStreamingCell.height : grid.height
         opacity: root.currentStreamingCell ? 1.0 : 0.0
         Behavior on opacity { NumberAnimation { duration: 150 } }
         visible: opacity > 0
